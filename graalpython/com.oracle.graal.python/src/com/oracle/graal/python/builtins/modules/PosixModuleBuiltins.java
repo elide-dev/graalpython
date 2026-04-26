@@ -315,15 +315,44 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
 
         PosixSupportLibrary posixLib = PosixSupportLibrary.getUncached();
         Object posixSupport = core.getContext().getPosixSupport();
+        PythonModule posix = PythonOS.getPythonOS() == PythonOS.PLATFORM_WIN32
+            ? core.lookupBuiltinModule(T_NT) : core.lookupBuiltinModule(T_POSIX);
+
+        PDict sysconfNamesAttr = (PDict) posix.getAttribute(tsLiteral("sysconf_names"));
+        sysconfNamesAttr.setDictStorage(HashingStorageNodes.HashingStorageCopy.executeUncached(SysconfNode.SYSCONF_NAMES));
+
+        if (posixLib.getBackend(posixSupport).toJavaStringUncached().equals("java")) {
+            posix.setAttribute(toTruffleStringUncached("statvfs"), PNone.NO_VALUE);
+            posix.setAttribute(toTruffleStringUncached("geteuid"), PNone.NO_VALUE);
+            posix.setAttribute(toTruffleStringUncached("getegid"), PNone.NO_VALUE);
+            posix.setAttribute(toTruffleStringUncached("WNOHANG"), EMULATED_WNOHANG);
+        }
+
+        if (!core.getContext().getEnv().isPreInitialization()) {
+            populateEnviron(core);
+        }
+    }
+
+    @Override
+    public boolean hasPatchPostInitialize() {
+        return true;
+    }
+
+    @Override
+    public void patchPostInitialize(Python3Core core) {
+        populateEnviron(core);
+    }
+
+    private void populateEnviron(Python3Core core) {
+        PosixSupportLibrary posixLib = PosixSupportLibrary.getUncached();
+        Object posixSupport = core.getContext().getPosixSupport();
         PythonLanguage language = core.getLanguage();
 
-        // fill the environ dictionary with the current environment
-        // TODO we should probably use PosixSupportLibrary to get environ
         Map<String, String> getenv = core.getContext().getEnv().getEnvironment();
         PDict environ = PFactory.createDict(language);
         String pyenvLauncherKey = "__PYVENV_LAUNCHER__";
         for (Entry<String, String> entry : getenv.entrySet()) {
-            if (entry.getKey().equals("GRAAL_PYTHON_ARGS") && entry.getValue().endsWith("\013")) {
+            if ((entry.getKey().equals("GRAAL_PYTHON_ARGS") || entry.getKey().equals("GRAAL_PYTHON_VM_ARGS")) && entry.getValue().endsWith("\013")) {
                 // was already processed at startup in GraalPythonMain and
                 // we don't want subprocesses to pick it up
                 continue;
@@ -339,9 +368,6 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
                 key = PFactory.createBytes(language, entry.getKey().getBytes());
             }
             if (pyenvLauncherKey.equals(entry.getKey())) {
-                // On Mac, the CPython launcher uses this env variable to specify the real Python
-                // executable. It will be honored by packages like "site". So, if it is set, we
-                // overwrite it with our executable to ensure that subprocesses will use us.
                 TruffleString value = core.getContext().getOption(PythonOptions.Executable);
                 try {
                     Object k = posixLib.createPathFromString(posixSupport, toTruffleStringUncached(pyenvLauncherKey));
@@ -384,17 +410,6 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
         }
         Object environAttr = posix.getAttribute(tsLiteral("environ"));
         ((PDict) environAttr).setDictStorage(environ.getDictStorage());
-
-        PDict sysconfNamesAttr = (PDict) posix.getAttribute(tsLiteral("sysconf_names"));
-        sysconfNamesAttr.setDictStorage(HashingStorageNodes.HashingStorageCopy.executeUncached(SysconfNode.SYSCONF_NAMES));
-
-        if (posixLib.getBackend(posixSupport).toJavaStringUncached().equals("java")) {
-            posix.setAttribute(toTruffleStringUncached("statvfs"), PNone.NO_VALUE);
-            posix.setAttribute(toTruffleStringUncached("geteuid"), PNone.NO_VALUE);
-            posix.setAttribute(toTruffleStringUncached("getegid"), PNone.NO_VALUE);
-
-            posix.setAttribute(toTruffleStringUncached("WNOHANG"), EMULATED_WNOHANG);
-        }
     }
 
     @Builtin(name = "stat_result", minNumOfPositionalArgs = 1, parameterNames = {"$cls", "sequence", "dict"}, constructsClass = PythonBuiltinClassType.PStatResult)
