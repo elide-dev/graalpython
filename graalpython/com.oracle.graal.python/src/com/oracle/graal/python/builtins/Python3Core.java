@@ -445,6 +445,7 @@ public abstract class Python3Core {
     }
 
     private PythonBuiltins[] builtins;
+    private PythonBuiltins[] patchBuiltins;
 
     public static final boolean HAS_PROFILER_TOOL;
     static {
@@ -472,6 +473,16 @@ public abstract class Python3Core {
             }
         }
         builtins.removeAll(toRemove);
+    }
+
+    private static PythonBuiltins[] computePatchBuiltins(PythonBuiltins[] all) {
+        java.util.ArrayList<PythonBuiltins> result = new java.util.ArrayList<>();
+        for (PythonBuiltins b : all) {
+            if (b.hasPatchPostInitialize()) {
+                result.add(b);
+            }
+        }
+        return result.toArray(new PythonBuiltins[0]);
     }
 
     private static PythonBuiltins[] initializeBuiltins(TruffleLanguage.Env env) {
@@ -939,6 +950,7 @@ public abstract class Python3Core {
     public final void initialize(PythonContext context) {
         assert this.builtins == null;
         this.builtins = initializeBuiltins(context.getEnv());
+        this.patchBuiltins = computePatchBuiltins(this.builtins);
         initializeJavaCore();
         initializeImportlib();
         if (context.getEnv().isPreInitialization()) {
@@ -1063,18 +1075,24 @@ public abstract class Python3Core {
      * omitted when creating a pre-initialized context.
      */
     public final void postInitialize(Env env) {
+        boolean preinitBuiltins = Boolean.getBoolean("python.PreInitializeBuiltins");
+        if (env.isPreInitialization() && !preinitBuiltins) {
+            return;
+        }
+        initialized = false;
         if (!env.isPreInitialization()) {
-            initialized = false;
             if (PythonLanguage.getPythonOS() == PythonOS.PLATFORM_WIN32) {
                 initializeWindowsCoreFiles(getContext().getCoreHomeOrFail());
             }
+        }
 
-            for (PythonBuiltins builtin : builtins) {
-                if (builtin.needsPostInitialize()) {
-                    builtin.postInitialize(this);
-                }
+        for (PythonBuiltins builtin : builtins) {
+            if (builtin.needsPostInitialize()) {
+                builtin.postInitialize(this);
             }
+        }
 
+        if (!env.isPreInitialization()) {
             /*
              * Special case for _bz2: If native access is not allowed, we cannot use the built-in
              * implementation that would call libbz2 via NativeAccess. Therefore, we remove it from the
@@ -1104,9 +1122,40 @@ public abstract class Python3Core {
                                     "Cannot expose `PollPythonAsyncActions'. If this is not called regularly, Python will leak memory.");
                 }
             }
-
-            initialized = true;
         }
+
+        initialized = true;
+    }
+
+    public final void patchPostInitialize(Env env) {
+        initialized = false;
+
+        for (PythonBuiltins builtin : patchBuiltins) {
+            builtin.patchPostInitialize(this);
+        }
+
+        if (!PythonImageBuildOptions.WITHOUT_COMPRESSION_LIBRARIES && TruffleOptions.AOT && !getContext().isNativeAccessAllowed()) {
+            removeBuiltinModule(BuiltinNames.T_BZ2);
+        }
+
+        globalScopeObject = PythonMapScope.createTopScope(getContext());
+        getContext().getSharedFinalizer().registerAsyncAction();
+
+        if (!PythonOptions.AUTOMATIC_ASYNC_ACTIONS) {
+            if (getContext().getEnv().isPolyglotBindingsAccessAllowed()) {
+                getContext().getEnv().exportSymbol("PollPythonAsyncActions", getContext().getEnv().asGuestValue(new Runnable() {
+                    @Override
+                    public void run() {
+                        getContext().pollAsyncActions();
+                    }
+                }));
+            } else {
+                LOGGER.log(Level.SEVERE, "AutomaticAsyncActions are disabled, but PolyglotBindingsAccess is not allowed. " +
+                                "Cannot expose `PollPythonAsyncActions'. If this is not called regularly, Python will leak memory.");
+            }
+        }
+
+        initialized = true;
     }
 
     @TruffleBoundary

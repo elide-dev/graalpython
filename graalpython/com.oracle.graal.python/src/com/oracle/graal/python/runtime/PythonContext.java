@@ -1197,7 +1197,11 @@ public final class PythonContext extends Python3Core {
             mainThread = new WeakReference<>(Thread.currentThread());
             setEnv(newEnv);
             setupRuntimeInformation(true);
-            postInitialize(newEnv);
+            if (Boolean.getBoolean("python.PreInitializeBuiltins")) {
+                patchPostInitialize(newEnv);
+            } else {
+                postInitialize(newEnv);
+            }
             importSiteIfForced();
         } finally {
             releaseGil();
@@ -1318,8 +1322,9 @@ public final class PythonContext extends Python3Core {
     }
 
     private void setupRuntimeInformation(boolean isPatching) {
-        if (!env.isPreInitialization()) {
-            initializeHashSecret();
+        if (isPatching) {
+            patchRuntimeInformation();
+            return;
         }
         initializeLocale();
         setIntMaxStrDigits(getOption(PythonOptions.IntMaxStrDigits));
@@ -1336,15 +1341,15 @@ public final class PythonContext extends Python3Core {
         getSysModules().setItem(T___MAIN__, mainModule);
 
         if (env.isPreInitialization()) {
-            // Patch any pre-loaded packages' paths if we're running
-            // pre-initialization
             patchPackagePaths(getStdlibHome(), T_STD_LIB_PLACEHOLDER);
-        } else if (isPatching) {
-            // Patch any pre-loaded packages' paths to the new stdlib home if
-            // we're patching a pre-initialized context
-            patchPackagePaths(T_STD_LIB_PLACEHOLDER, getStdlibHome());
         }
 
+        isInitialized = true;
+    }
+
+    private void patchRuntimeInformation() {
+        initializeHashSecret();
+        patchPackagePaths(T_STD_LIB_PLACEHOLDER, getStdlibHome());
         isInitialized = true;
     }
 
