@@ -584,9 +584,6 @@ public final class SysModuleBuiltins extends PythonBuiltins {
         PythonModule sys = core.lookupBuiltinModule(T_SYS);
         PythonContext context = core.getContext();
         PythonLanguage language = core.getLanguage();
-        String[] args = context.getEnv().getApplicationArguments();
-        sys.setAttribute(tsLiteral("argv"), PFactory.createList(language, convertToObjectArray(args)));
-        sys.setAttribute(tsLiteral("orig_argv"), PFactory.createList(language, convertToObjectArray(PythonOptions.getOrigArgv(core.getContext()))));
 
         sys.setAttribute(tsLiteral("stdlib_module_names"), createStdLibModulesSet(language));
 
@@ -601,24 +598,7 @@ public final class SysModuleBuiltins extends PythonBuiltins {
         }
 
         sys.setAttribute(tsLiteral("platlibdir"), tsLiteral("lib"));
-
-        TruffleString coreHome = context.getCoreHome();
-        TruffleString stdlibHome = context.getStdlibHome();
-        TruffleString capiHome = context.getCAPIHome();
-
-        if (!context.getEnv().isPreInitialization()) {
-            TruffleString executable = context.getOption(PythonOptions.Executable);
-            TruffleString baseExecutable = context.getOption(PythonOptions.BaseExecutable);
-            sys.setAttribute(tsLiteral("executable"), executable);
-            sys.setAttribute(tsLiteral("_base_executable"), baseExecutable.isEmpty() ? executable : baseExecutable);
-        }
         sys.setAttribute(tsLiteral("dont_write_bytecode"), context.getOption(PythonOptions.DontWriteBytecodeFlag));
-        TruffleString pycachePrefix = context.getOption(PythonOptions.PyCachePrefix);
-        if (pycachePrefix.isEmpty() && PythonOptions.ENABLE_BYTECODE_DSL_INTERPRETER && System.getenv("GRAALPY_BYTECODE_DSL_PYTHONPYCACHEPREFIX") != null) {
-            pycachePrefix = PythonUtils.toTruffleStringUncached(System.getenv("GRAALPY_BYTECODE_DSL_PYTHONPYCACHEPREFIX"));
-        }
-        sys.setAttribute(tsLiteral("pycache_prefix"), pycachePrefix.isEmpty() ? PNone.NONE : pycachePrefix);
-        sys.setAttribute(tsLiteral("_stdlib_dir"), stdlibHome);
 
         TruffleString strWarnoption = context.getOption(PythonOptions.WarnOptions);
         Object[] warnoptions;
@@ -631,35 +611,6 @@ public final class SysModuleBuiltins extends PythonBuiltins {
         }
         sys.setAttribute(tsLiteral("warnoptions"), PFactory.createList(language, warnoptions));
 
-        Env env = context.getEnv();
-        TruffleString pythonPath = context.getOption(PythonOptions.PythonPath);
-
-        boolean capiSeparate = !capiHome.equalsUncached(coreHome, TS_ENCODING);
-
-        Object[] path;
-        int pathIdx = 0;
-        int defaultPathsLen = 2;
-        if (capiSeparate) {
-            defaultPathsLen++;
-        }
-        if (!pythonPath.isEmpty()) {
-            TruffleString sep = toTruffleStringUncached(context.getEnv().getPathSeparator());
-            TruffleString[] split = StringUtils.split(pythonPath, sep, TruffleString.CodePointLengthNode.getUncached(), TruffleString.IndexOfStringNode.getUncached(),
-                            TruffleString.SubstringNode.getUncached(), TruffleString.EqualNode.getUncached());
-            path = new Object[split.length + defaultPathsLen];
-            System.arraycopy(split, 0, path, 0, split.length);
-            pathIdx = split.length;
-        } else {
-            path = new Object[defaultPathsLen];
-        }
-        path[pathIdx++] = stdlibHome;
-        path[pathIdx++] = toTruffleStringUncached(coreHome + env.getFileNameSeparator() + "modules");
-        if (capiSeparate) {
-            // include our native modules on the path
-            path[pathIdx++] = toTruffleStringUncached(capiHome + env.getFileNameSeparator() + "modules");
-        }
-        PList sysPaths = PFactory.createList(language, path);
-        sys.setAttribute(tsLiteral("path"), sysPaths);
         sys.setAttribute(tsLiteral("flags"), PFactory.createStructSeq(language, SysModuleBuiltins.FLAGS_DESC,
                         PInt.intValue(!context.getOption(PythonOptions.PythonOptimizeFlag)), // debug
                         PInt.intValue(context.getOption(PythonOptions.InspectFlag)), // inspect
@@ -684,6 +635,64 @@ public final class SysModuleBuiltins extends PythonBuiltins {
         sys.setAttribute(T___UNRAISABLEHOOK__, sys.getAttribute(T_UNRAISABLEHOOK));
         sys.setAttribute(T___DISPLAYHOOK__, sys.getAttribute(T_DISPLAYHOOK));
         sys.setAttribute(T___BREAKPOINTHOOK__, sys.getAttribute(T_BREAKPOINTHOOK));
+
+        if (!context.getEnv().isPreInitialization()) {
+            patchRuntimeSysState(core);
+        }
+    }
+
+    private static void patchRuntimeSysState(Python3Core core) {
+        PythonModule sys = core.lookupBuiltinModule(T_SYS);
+        PythonContext context = core.getContext();
+        PythonLanguage language = core.getLanguage();
+
+        String[] args = context.getEnv().getApplicationArguments();
+        sys.setAttribute(tsLiteral("argv"), PFactory.createList(language, convertToObjectArray(args)));
+        sys.setAttribute(tsLiteral("orig_argv"), PFactory.createList(language, convertToObjectArray(PythonOptions.getOrigArgv(core.getContext()))));
+
+        TruffleString executable = context.getOption(PythonOptions.Executable);
+        TruffleString baseExecutable = context.getOption(PythonOptions.BaseExecutable);
+        sys.setAttribute(tsLiteral("executable"), executable);
+        sys.setAttribute(tsLiteral("_base_executable"), baseExecutable.isEmpty() ? executable : baseExecutable);
+
+        TruffleString pycachePrefix = context.getOption(PythonOptions.PyCachePrefix);
+        if (pycachePrefix.isEmpty() && PythonOptions.ENABLE_BYTECODE_DSL_INTERPRETER && System.getenv("GRAALPY_BYTECODE_DSL_PYTHONPYCACHEPREFIX") != null) {
+            pycachePrefix = PythonUtils.toTruffleStringUncached(System.getenv("GRAALPY_BYTECODE_DSL_PYTHONPYCACHEPREFIX"));
+        }
+        sys.setAttribute(tsLiteral("pycache_prefix"), pycachePrefix.isEmpty() ? PNone.NONE : pycachePrefix);
+
+        TruffleString coreHome = context.getCoreHome();
+        TruffleString stdlibHome = context.getStdlibHome();
+        TruffleString capiHome = context.getCAPIHome();
+        sys.setAttribute(tsLiteral("_stdlib_dir"), stdlibHome);
+
+        Env env = context.getEnv();
+        TruffleString pythonPath = context.getOption(PythonOptions.PythonPath);
+        boolean capiSeparate = !capiHome.equalsUncached(coreHome, TS_ENCODING);
+
+        Object[] path;
+        int pathIdx = 0;
+        int defaultPathsLen = 2;
+        if (capiSeparate) {
+            defaultPathsLen++;
+        }
+        if (!pythonPath.isEmpty()) {
+            TruffleString sep = toTruffleStringUncached(context.getEnv().getPathSeparator());
+            TruffleString[] split = StringUtils.split(pythonPath, sep, TruffleString.CodePointLengthNode.getUncached(), TruffleString.IndexOfStringNode.getUncached(),
+                            TruffleString.SubstringNode.getUncached(), TruffleString.EqualNode.getUncached());
+            path = new Object[split.length + defaultPathsLen];
+            System.arraycopy(split, 0, path, 0, split.length);
+            pathIdx = split.length;
+        } else {
+            path = new Object[defaultPathsLen];
+        }
+        path[pathIdx++] = stdlibHome;
+        path[pathIdx++] = toTruffleStringUncached(coreHome + env.getFileNameSeparator() + "modules");
+        if (capiSeparate) {
+            path[pathIdx++] = toTruffleStringUncached(capiHome + env.getFileNameSeparator() + "modules");
+        }
+        PList sysPaths = PFactory.createList(language, path);
+        sys.setAttribute(tsLiteral("path"), sysPaths);
     }
 
     private static PFrozenSet createStdLibModulesSet(PythonLanguage language) {
@@ -723,7 +732,23 @@ public final class SysModuleBuiltins extends PythonBuiltins {
     @Override
     public void postInitialize(Python3Core core) {
         postInitialize0(core);
-        initStd(core);
+        boolean preinitStdio = Boolean.getBoolean("python.PreInitializeStdio");
+        if (!core.getContext().getEnv().isPreInitialization() || preinitStdio) {
+            initStd(core);
+        }
+    }
+
+    @Override
+    public boolean hasPatchPostInitialize() {
+        return true;
+    }
+
+    @Override
+    public void patchPostInitialize(Python3Core core) {
+        patchRuntimeSysState(core);
+        if (!Boolean.getBoolean("python.PreInitializeStdio")) {
+            initStd(core);
+        }
     }
 
     @TruffleBoundary
@@ -731,7 +756,6 @@ public final class SysModuleBuiltins extends PythonBuiltins {
         PythonContext context = core.getContext();
         PythonLanguage language = core.getLanguage();
 
-        // wrap std in/out/err
         GraalPythonModuleBuiltins gp = (GraalPythonModuleBuiltins) core.lookupBuiltinModule(T___GRAALPYTHON__).getBuiltins();
         TruffleString stdioEncoding = gp.getStdIOEncoding();
         TruffleString stdioError = gp.getStdIOError();
@@ -739,7 +763,6 @@ public final class SysModuleBuiltins extends PythonBuiltins {
         PosixSupportLibrary posixLib = PosixSupportLibrary.getUncached();
         PythonModule sysModule = core.lookupBuiltinModule(T_SYS);
 
-        // Note that stdin is always buffered, this only applies to stdout and stderr
         boolean buffering = !context.getOption(PythonOptions.UnbufferedIO);
 
         PFileIO stdinFileIO = PFactory.createFileIO(language);

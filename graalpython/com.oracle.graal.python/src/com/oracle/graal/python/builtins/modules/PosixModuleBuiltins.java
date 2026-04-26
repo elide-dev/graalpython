@@ -306,29 +306,48 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
 
         PosixSupportLibrary posixLib = PosixSupportLibrary.getUncached();
         Object posixSupport = core.getContext().getPosixSupport();
+
+        if (posixLib.getBackend(posixSupport).toJavaStringUncached().equals("java")) {
+            PythonModule posix = PythonOS.getPythonOS() == PythonOS.PLATFORM_WIN32
+                ? core.lookupBuiltinModule(T_NT) : core.lookupBuiltinModule(T_POSIX);
+            posix.setAttribute(toTruffleStringUncached("geteuid"), PNone.NO_VALUE);
+            posix.setAttribute(toTruffleStringUncached("getegid"), PNone.NO_VALUE);
+            posix.setAttribute(toTruffleStringUncached("WNOHANG"), EMULATED_WNOHANG);
+        }
+
+        if (!core.getContext().getEnv().isPreInitialization()) {
+            populateEnviron(core);
+        }
+    }
+
+    @Override
+    public boolean hasPatchPostInitialize() {
+        return true;
+    }
+
+    @Override
+    public void patchPostInitialize(Python3Core core) {
+        populateEnviron(core);
+    }
+
+    private void populateEnviron(Python3Core core) {
+        PosixSupportLibrary posixLib = PosixSupportLibrary.getUncached();
+        Object posixSupport = core.getContext().getPosixSupport();
         PythonLanguage language = core.getLanguage();
 
-        // fill the environ dictionary with the current environment
-        // TODO we should probably use PosixSupportLibrary to get environ
         Map<String, String> getenv = core.getContext().getEnv().getEnvironment();
         PDict environ = PFactory.createDict(language);
         String pyenvLauncherKey = "__PYVENV_LAUNCHER__";
         for (Entry<String, String> entry : getenv.entrySet()) {
             if ((entry.getKey().equals("GRAAL_PYTHON_ARGS") || entry.getKey().equals("GRAAL_PYTHON_VM_ARGS")) && entry.getValue().endsWith("\013")) {
-                // was already processed at startup in GraalPythonMain and
-                // we don't want subprocesses to pick it up
                 continue;
             }
             if (PythonOS.getPythonOS() == PythonOS.PLATFORM_WIN32 && entry.getKey().startsWith("=")) {
-                // Hidden variable, shouldn't be visible to python
                 continue;
             }
             Object key = toEnv(language, entry.getKey());
             Object val = toEnv(language, entry.getValue());
             if (pyenvLauncherKey.equals(entry.getKey())) {
-                // On Mac, the CPython launcher uses this env variable to specify the real Python
-                // executable. It will be honored by packages like "site". So, if it is set, we
-                // overwrite it with our executable to ensure that subprocesses will use us.
                 TruffleString value = core.getContext().getOption(PythonOptions.Executable);
                 try {
                     Object k = posixLib.createPathFromString(posixSupport, toTruffleStringUncached(pyenvLauncherKey));
@@ -341,11 +360,8 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
             environ.setItem(key, val);
         }
         if (PythonOS.getPythonOS() == PythonOS.PLATFORM_WIN32) {
-            // XXX: Until we fix pip
             environ.setItem(toEnv(language, "PIP_NO_CACHE_DIR"), toEnv(language, "0"));
         }
-        // XXX: Until a pyo3 version that doesn't have a different maximum version for GraalPy than
-        // CPython gets widespread
         environ.setItem(toEnv(language, "UNSAFE_PYO3_SKIP_VERSION_CHECK"), toEnv(language, "1"));
         PythonModule posix;
         if (PythonOS.getPythonOS() == PythonOS.PLATFORM_WIN32) {
@@ -358,13 +374,6 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
         }
         Object environAttr = posix.getAttribute(T_ENVIRON);
         ((PDict) environAttr).setDictStorage(environ.getDictStorage());
-
-        if (posixLib.getBackend(posixSupport).toJavaStringUncached().equals("java")) {
-            posix.setAttribute(toTruffleStringUncached("geteuid"), PNone.NO_VALUE);
-            posix.setAttribute(toTruffleStringUncached("getegid"), PNone.NO_VALUE);
-
-            posix.setAttribute(toTruffleStringUncached("WNOHANG"), EMULATED_WNOHANG);
-        }
     }
 
     private static Object toEnv(PythonLanguage language, String value) {
