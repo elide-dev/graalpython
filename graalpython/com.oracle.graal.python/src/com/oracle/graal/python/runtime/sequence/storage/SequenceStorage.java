@@ -42,6 +42,7 @@ public abstract class SequenceStorage {
                 case Uninitialized, Empty -> false;
                 case Boolean, Byte, Double, Int -> other == Uninitialized || other == Empty || other == Byte;
                 case Long -> other == Uninitialized || other == Empty || other == Byte || other == Int;
+                case Generic -> other != Generic;
                 default -> true;
             };
         }
