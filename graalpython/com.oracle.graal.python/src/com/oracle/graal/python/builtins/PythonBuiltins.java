@@ -144,6 +144,14 @@ public abstract class PythonBuiltins {
         // nothing to do by default
     }
 
+    public void patchPostInitialize(@SuppressWarnings("unused") Python3Core core) {
+        // nothing to do by default; override to patch runtime-dependent state
+    }
+
+    public boolean hasPatchPostInitialize() {
+        return false;
+    }
+
     private void initializeEachFactoryWith(BiConsumer<NodeFactory<? extends PythonBuiltinBaseNode>, Builtin> func) {
         List<? extends NodeFactory<? extends PythonBuiltinBaseNode>> factories = getNodeFactories();
         assert factories != null : "No factories found. Override getFactories() to resolve this.";
