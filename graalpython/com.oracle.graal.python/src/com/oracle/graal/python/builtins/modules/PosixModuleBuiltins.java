@@ -301,10 +301,40 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
 
         PosixSupportLibrary posixLib = PosixSupportLibrary.getUncached();
         Object posixSupport = core.getContext().getPosixSupport();
+        PythonModule posix = PythonOS.getPythonOS() == PythonOS.PLATFORM_WIN32
+            ? core.lookupBuiltinModule(T_NT) : core.lookupBuiltinModule(T_POSIX);
+
+        // Build-time-safe: mark attrs unavailable on the java backend (no runtime state, so this
+        // is correct to bake into a pre-initialized image). Matches the 3.12 baseline set — do
+        // NOT NO_VALUE `statvfs`/`sysconf_names`, which 3.12 implements.
+        if (posixLib.getBackend(posixSupport).toJavaStringUncached().equals("java")) {
+            posix.setAttribute(toTruffleStringUncached("geteuid"), PNone.NO_VALUE);
+            posix.setAttribute(toTruffleStringUncached("getegid"), PNone.NO_VALUE);
+            posix.setAttribute(toTruffleStringUncached("WNOHANG"), EMULATED_WNOHANG);
+        }
+
+        // Runtime-dependent (reads the live environment / executable): deferred to
+        // patchPostInitialize when building a pre-initialized context.
+        if (!core.getContext().getEnv().isPreInitialization()) {
+            populateEnviron(core);
+        }
+    }
+
+    @Override
+    public boolean hasPatchPostInitialize() {
+        return true;
+    }
+
+    @Override
+    public void patchPostInitialize(Python3Core core) {
+        populateEnviron(core);
+    }
+
+    private void populateEnviron(Python3Core core) {
+        PosixSupportLibrary posixLib = PosixSupportLibrary.getUncached();
+        Object posixSupport = core.getContext().getPosixSupport();
         PythonLanguage language = core.getLanguage();
 
-        // fill the environ dictionary with the current environment
-        // TODO we should probably use PosixSupportLibrary to get environ
         Map<String, String> getenv = core.getContext().getEnv().getEnvironment();
         PDict environ = PFactory.createDict(language);
         String pyenvLauncherKey = "__PYVENV_LAUNCHER__";
@@ -321,9 +351,6 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
             Object key = toEnv(language, entry.getKey());
             Object val = toEnv(language, entry.getValue());
             if (pyenvLauncherKey.equals(entry.getKey())) {
-                // On Mac, the CPython launcher uses this env variable to specify the real Python
-                // executable. It will be honored by packages like "site". So, if it is set, we
-                // overwrite it with our executable to ensure that subprocesses will use us.
                 TruffleString value = core.getContext().getOption(PythonOptions.Executable);
                 try {
                     Object k = posixLib.createPathFromString(posixSupport, toTruffleStringUncached(pyenvLauncherKey));
@@ -353,13 +380,6 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
         }
         Object environAttr = posix.getAttribute(T_ENVIRON);
         ((PDict) environAttr).setDictStorage(environ.getDictStorage());
-
-        if (posixLib.getBackend(posixSupport).toJavaStringUncached().equals("java")) {
-            posix.setAttribute(toTruffleStringUncached("geteuid"), PNone.NO_VALUE);
-            posix.setAttribute(toTruffleStringUncached("getegid"), PNone.NO_VALUE);
-
-            posix.setAttribute(toTruffleStringUncached("WNOHANG"), EMULATED_WNOHANG);
-        }
     }
 
     private static Object toEnv(PythonLanguage language, String value) {
