@@ -251,7 +251,7 @@ static const char* getBoxedPrimitiveName(uint64_t bits) {
 static int ctx_SetItem_s_jni(HPyContext *ctx, HPy target, const char *name, HPy value) {
     uint64_t bits = toBits(target);
     if (!isBoxedHandle(bits)) {
-        const size_t buffer_size = 128;
+        enum { buffer_size = 128 };
 #ifdef _MSC_VER
         char *message = (char *)alloca(buffer_size);
 #else
@@ -269,7 +269,7 @@ static int ctx_SetItem_s_jni(HPyContext *ctx, HPy target, const char *name, HPy 
 static HPy ctx_GetItem_s_jni(HPyContext *ctx, HPy target, const char *name) {
     uint64_t bits = toBits(target);
     if (!isBoxedHandle(bits)) {
-        const size_t buffer_size = 128;
+        enum { buffer_size = 128 };
 #ifdef _MSC_VER
         char *message = (char *)alloca(buffer_size);
 #else

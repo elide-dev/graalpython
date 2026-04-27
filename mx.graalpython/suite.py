@@ -1534,6 +1534,7 @@ suite = {
         },
         "org.graalvm.python.gradle.plugin": {
             "class": "GradlePluginProject",
+            "ignore": "Skipped for Elide 25.0.3 build",
             "subDir": "graalpython",
             "javaCompliance": "17+",
             "checkstyle": "com.oracle.graal.python",
