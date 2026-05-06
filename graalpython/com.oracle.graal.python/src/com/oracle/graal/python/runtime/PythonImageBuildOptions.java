@@ -81,6 +81,20 @@ public final class PythonImageBuildOptions {
      */
     public static final boolean WITHOUT_JNI = Boolean.getBoolean("python.WithoutJNI");
 
+    /**
+     * Whether builtin module postInitialize was run at preinit (build) time. Read at class init so
+     * the value is folded into the image; subsequent {@code Boolean.getBoolean(...)} calls in
+     * {@code PythonContext.patch} would always return false because user {@code -D} flags are
+     * filtered from runtime in native-image.
+     */
+    public static final boolean PRE_INIT_BUILTINS = Boolean.getBoolean("python.PreInitializeBuiltins");
+
+    /**
+     * Whether sys std streams were initialized at preinit (build) time. Same folding rationale as
+     * {@link #PRE_INIT_BUILTINS}.
+     */
+    public static final boolean PRE_INIT_STDIO = Boolean.getBoolean("python.PreInitializeStdio");
+
     private PythonImageBuildOptions() {
     }
 }
