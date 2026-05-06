@@ -255,6 +255,7 @@ import com.oracle.graal.python.runtime.IndirectCallData.BoundaryCallData;
 import com.oracle.graal.python.runtime.PosixSupportLibrary;
 import com.oracle.graal.python.runtime.PythonContext;
 import com.oracle.graal.python.runtime.PythonContext.CApiState;
+import com.oracle.graal.python.runtime.PythonImageBuildOptions;
 import com.oracle.graal.python.runtime.PythonOptions;
 import com.oracle.graal.python.runtime.exception.PException;
 import com.oracle.graal.python.runtime.formatting.IntegerFormatter;
@@ -760,7 +761,7 @@ public final class SysModuleBuiltins extends PythonBuiltins {
     @Override
     public void postInitialize(Python3Core core) {
         postInitialize0(core);
-        boolean preinitStdio = Boolean.getBoolean("python.PreInitializeStdio");
+        boolean preinitStdio = PythonImageBuildOptions.PRE_INIT_STDIO;
         if (!core.getContext().getEnv().isPreInitialization() || preinitStdio) {
             initStd(core);
         }
@@ -778,7 +779,7 @@ public final class SysModuleBuiltins extends PythonBuiltins {
     @Override
     public void patchPostInitialize(Python3Core core) {
         patchRuntimeSysState(core);
-        if (!Boolean.getBoolean("python.PreInitializeStdio")) {
+        if (!PythonImageBuildOptions.PRE_INIT_STDIO) {
             initStd(core);
         }
     }

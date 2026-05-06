@@ -1197,7 +1197,7 @@ public final class PythonContext extends Python3Core {
             mainThread = new WeakReference<>(Thread.currentThread());
             setEnv(newEnv);
             setupRuntimeInformation(true);
-            if (Boolean.getBoolean("python.PreInitializeBuiltins")) {
+            if (PythonImageBuildOptions.PRE_INIT_BUILTINS) {
                 patchPostInitialize(newEnv);
             } else {
                 postInitialize(newEnv);
