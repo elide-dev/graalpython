@@ -1071,7 +1071,7 @@ public abstract class Python3Core {
      * omitted when creating a pre-initialized context.
      */
     public final void postInitialize(Env env) {
-        boolean preinitBuiltins = Boolean.getBoolean("python.PreInitializeBuiltins");
+        boolean preinitBuiltins = PythonImageBuildOptions.PRE_INIT_BUILTINS;
         if (env.isPreInitialization() && !preinitBuiltins) {
             return;
         }
