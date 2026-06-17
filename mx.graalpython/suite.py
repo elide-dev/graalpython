@@ -1148,6 +1148,11 @@ suite = {
                 "uses": [
                     "com.oracle.graal.python.runtime.crypto.BouncyCastleSupport",
                 ],
+                # Elide: discover embedder-provided intrinsic builtin modules (e.g. the `elide`
+                # interop module) via ServiceLoader from Python3Core.initializeBuiltins.
+                "uses": [
+                    "com.oracle.graal.python.builtins.PythonBuiltins",
+                ],
             },
             "useModulePath": True,
             "dependencies": [
