@@ -61,6 +61,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.ServiceLoader;
 import java.util.logging.Level;
 
 import com.oracle.graal.python.PythonLanguage;
@@ -840,6 +841,11 @@ public abstract class Python3Core {
             builtins.add(new BZ2CompressorBuiltins());
             builtins.add(new BZ2DecompressorBuiltins());
             builtins.add(new BZ2ModuleBuiltins());
+        }
+        // Elide: install host-provided intrinsic modules (e.g. the `elide` interop module)
+        // contributed by embedders via ServiceLoader, so core need not enumerate them.
+        for (PythonBuiltins externalBuiltin : ServiceLoader.load(PythonBuiltins.class, Python3Core.class.getClassLoader())) {
+            builtins.add(externalBuiltin);
         }
         filterBuiltins(builtins);
         return builtins.toArray(new PythonBuiltins[builtins.size()]);
