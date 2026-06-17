@@ -1145,7 +1145,10 @@ suite = {
             "moduleInfo": {
                 "name": "org.graalvm.py",
                 "exports": [
-                    "com.oracle.graal.python.* to org.graalvm.py.enterprise",
+                    # Elide: export internals unqualified (was qualified to .enterprise) so embedder
+                    # modules on the classpath — the `elide` interop builtin in the unnamed module —
+                    # can extend PythonBuiltins and reference the node/lib internals it needs.
+                    "com.oracle.graal.python.*",
                 ],
                 # Elide: discover embedder-provided intrinsic builtin modules (e.g. the `elide`
                 # interop module) via ServiceLoader from Python3Core.initializeBuiltins.
