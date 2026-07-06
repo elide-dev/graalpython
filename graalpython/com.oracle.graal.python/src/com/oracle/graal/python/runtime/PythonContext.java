@@ -112,6 +112,7 @@ import com.oracle.graal.python.builtins.objects.common.HashingStorage;
 import com.oracle.graal.python.builtins.objects.common.HashingStorageNodes.HashingStorageGetItem;
 import com.oracle.graal.python.builtins.objects.common.HashingStorageNodes.HashingStorageGetIterator;
 import com.oracle.graal.python.builtins.objects.common.HashingStorageNodes.HashingStorageIterator;
+import com.oracle.graal.python.builtins.objects.common.HashingStorageNodes.HashingStorageIteratorKey;
 import com.oracle.graal.python.builtins.objects.common.HashingStorageNodes.HashingStorageIteratorNext;
 import com.oracle.graal.python.builtins.objects.common.HashingStorageNodes.HashingStorageIteratorValue;
 import com.oracle.graal.python.builtins.objects.common.ObjectHashMap;
@@ -1317,6 +1318,55 @@ public final class PythonContext extends Python3Core {
         }
     }
 
+    /**
+     * Repair frozen stdlib packages whose {@code __path__} was sealed to an empty list during
+     * pre-initialization (the pre-init context is built without a stdlib home, so frozen packages
+     * such as {@code encodings} get {@code __path__ == []} and their non-frozen submodules cannot
+     * be found at run time). {@link #patchPackagePaths} only rewrites placeholder path *strings*, so
+     * it cannot repair an empty list; this points each such package's {@code __path__} at its
+     * directory under the run-time stdlib home. Runs on the patch (pre-initialized) path only.
+     */
+    @TruffleBoundary
+    private void repairFrozenPackagePaths() {
+        TruffleString stdlibHome = getStdlibHome();
+        if (stdlibHome.isEmpty()) {
+            return;
+        }
+        TruffleFile stdlibDir = env.getPublicTruffleFile(stdlibHome.toJavaStringUncached());
+        PythonLanguage lang = PythonLanguage.get(null);
+        HashingStorage modulesStorage = getSysModules().getDictStorage();
+        HashingStorageIterator it = HashingStorageGetIterator.executeUncached(modulesStorage);
+        while (HashingStorageIteratorNext.executeUncached(modulesStorage, it)) {
+            Object v = HashingStorageIteratorValue.executeUncached(modulesStorage, it);
+            if (!(v instanceof PythonModule module)) {
+                continue;
+            }
+            Object path = module.getAttribute(SpecialAttributeNames.T___PATH__);
+            if (!(path instanceof PList plist)) {
+                continue;
+            }
+            // Only repair a sealed (empty) __path__; a populated list is already correct.
+            if (SequenceStorageNodes.CopyInternalArrayNode.executeUncached(plist.getSequenceStorage()).length != 0) {
+                continue;
+            }
+            Object key = HashingStorageIteratorKey.executeUncached(modulesStorage, it);
+            TruffleString name;
+            try {
+                name = CastToTruffleStringNode.executeUncached(key);
+            } catch (CannotCastException e) {
+                continue;
+            }
+            TruffleFile pkgDir = stdlibDir;
+            for (String segment : name.toJavaStringUncached().split("\\.")) {
+                pkgDir = pkgDir.resolve(segment);
+            }
+            if (pkgDir.isDirectory()) {
+                TruffleString pkgPath = toTruffleStringUncached(pkgDir.getPath());
+                module.setAttribute(SpecialAttributeNames.T___PATH__, PFactory.createList(lang, new Object[]{pkgPath}));
+            }
+        }
+    }
+
     private void initializeLocale() {
         setCurrentLocale(PythonLocale.initializeFromTruffleEnv(env));
     }
@@ -1350,6 +1400,7 @@ public final class PythonContext extends Python3Core {
     private void patchRuntimeInformation() {
         initializeHashSecret();
         patchPackagePaths(T_STD_LIB_PLACEHOLDER, getStdlibHome());
+        repairFrozenPackagePaths();
         isInitialized = true;
     }
 
