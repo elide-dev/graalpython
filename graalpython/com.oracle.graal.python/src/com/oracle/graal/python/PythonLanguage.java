@@ -675,6 +675,7 @@ public final class PythonLanguage extends TruffleLanguage<PythonContext> {
                 LOGGER.log(Level.FINE, () -> "parse '" + source.getName() + "'");
             }
             Parser parser = Compiler.createParser(source.getCharacters().toString(), errorCb, type, interactiveTerminal);
+            parser.setIntMaxStrDigits(context.getIntMaxStrDigits());
             ModTy mod = (ModTy) parser.parse();
             assert mod != null;
             return compileForBytecodeInterpreter(context, mod, source, topLevel, optimize, argumentNames, errorCb, futureFeatures);

@@ -75,7 +75,7 @@ public final class PythonBuiltinClass extends PythonManagedClass {
     @Override
     public void setAttribute(TruffleString name, Object value) {
         CompilerAsserts.neverPartOfCompilation();
-        if (!PythonContext.get(null).isCoreInitialized()) {
+        if (!PythonContext.get(null).isCoreInitialized() || type == PythonBuiltinClassType.AST) {
             setAttributeUnsafe(name, value);
         } else {
             throw PRaiseNode.raiseStatic(null, TypeError, ErrorMessages.CANT_SET_ATTRIBUTE_R_OF_IMMUTABLE_TYPE_N, PyObjectReprAsTruffleStringNode.executeUncached(name), this);

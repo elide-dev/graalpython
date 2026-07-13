@@ -760,8 +760,13 @@ public final class TypeBuiltins extends PythonBuiltins {
         }
 
         protected static boolean isImmutable(Object type) {
-            // TODO should also check Py_TPFLAGS_IMMUTABLETYPE
-            return type instanceof PythonBuiltinClass || type instanceof PythonBuiltinClassType;
+            PythonBuiltinClassType builtinType = null;
+            if (type instanceof PythonBuiltinClass pbc) {
+                builtinType = pbc.getType();
+            } else if (type instanceof PythonBuiltinClassType pbct) {
+                builtinType = pbct;
+            }
+            return builtinType != null && builtinType != PythonBuiltinClassType.AST;
         }
     }
 

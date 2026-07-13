@@ -4917,7 +4917,7 @@ public final class Parser extends AbstractParser {
                 if (endToken == null) {
                     return null;
                 }
-                _res = checkVersion(10, "Pattern matching is", factory.createTryStar(b, ex, el, f, startToken.sourceRange.withEnd(endToken.sourceRange)));
+                _res = checkVersion(11, "Exception groups are", factory.createTryStar(b, ex, el, f, startToken.sourceRange.withEnd(endToken.sourceRange)));
                 cache.putResult(_mark, TRY_STMT_ID, _res);
                 return (StmtTy)_res;
             }

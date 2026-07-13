@@ -150,7 +150,7 @@ public abstract class WriteAttributeToObjectNode extends PNodeWithContext {
                     @Shared("dylib") @CachedLibrary(limit = "getAttributeAccessInlineCacheMaxDepth()") DynamicObjectLibrary dylib,
                     @Shared("cpLen") @Cached TruffleString.CodePointLengthNode codePointLengthNode,
                     @Shared("cpAtIndex") @Cached TruffleString.CodePointAtIndexNode codePointAtIndexNode) {
-        if (PythonContext.get(this).isInitialized()) {
+        if (PythonContext.get(this).isInitialized() && klass.getType() != PythonBuiltinClassType.AST) {
             throw PRaiseNode.raiseStatic(this, TypeError, ErrorMessages.CANT_SET_ATTRIBUTE_R_OF_IMMUTABLE_TYPE_N, key, klass);
         } else {
             return writeToDynamicStorageManagedClass(klass, key, value, inliningTarget, callAttrUpdate, dylib, codePointLengthNode, codePointAtIndexNode);
@@ -209,7 +209,7 @@ public abstract class WriteAttributeToObjectNode extends PNodeWithContext {
                     @Shared("setHashingStorageItem") @Cached HashingStorageSetItem setHashingStorageItem,
                     @Shared("cpLen") @Cached TruffleString.CodePointLengthNode codePointLengthNode,
                     @Shared("cpAtIndex") @Cached TruffleString.CodePointAtIndexNode codePointAtIndexNode) {
-        if (PythonContext.get(this).isInitialized()) {
+        if (PythonContext.get(this).isInitialized() && klass.getType() != PythonBuiltinClassType.AST) {
             throw PRaiseNode.raiseStatic(this, TypeError, ErrorMessages.CANT_SET_ATTRIBUTE_R_OF_IMMUTABLE_TYPE_N, PyObjectReprAsTruffleStringNode.executeUncached(key), klass);
         } else {
             return writeToDictManagedClass(klass, dict, key, value, inliningTarget, callAttrUpdate, updateStorage, setHashingStorageItem, codePointLengthNode, codePointAtIndexNode);

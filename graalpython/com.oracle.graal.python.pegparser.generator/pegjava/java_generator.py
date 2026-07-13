@@ -248,7 +248,7 @@ ACTION_MAPPINGS = {
     '_PyAST_Starred ( a , Load , EXTRA )': (3, 'factory.createStarred(a, ExprContextTy.Load, $RANGE)'),
     '_PyAST_Try ( b , NULL , NULL , f , EXTRA )': (1, 'factory.createTry(b, null, null, f, $RANGE)'),
     '_PyAST_Try ( b , ex , el , f , EXTRA )': (1, 'factory.createTry(b, ex, el, f, $RANGE)'),
-    'CHECK_VERSION ( stmt_ty , 11 , "Exception groups are" , _PyAST_TryStar ( b , ex , el , f , EXTRA ) )': (1, 'checkVersion(10, "Pattern matching is", factory.createTryStar(b, ex, el, f, $RANGE))'),
+    'CHECK_VERSION ( stmt_ty , 11 , "Exception groups are" , _PyAST_TryStar ( b , ex , el , f , EXTRA ) )': (1, 'checkVersion(11, "Exception groups are", factory.createTryStar(b, ex, el, f, $RANGE))'),
     '_PyAST_Tuple ( CHECK ( asdl_expr_seq* , _PyPegen_seq_insert_in_front ( p , a , b ) ) , Load , EXTRA )': (2, 'factory.createTuple(this.insertInFront(a, b), ExprContextTy.Load, $RANGE)'),
     '_PyAST_Tuple ( CHECK ( asdl_expr_seq* , _PyPegen_seq_insert_in_front ( p , a , b ) ) , Store , EXTRA )': (1, 'factory.createTuple(this.insertInFront(a,b), ExprContextTy.Store, $RANGE)'),
     '_PyAST_Tuple ( CHECK ( asdl_expr_seq* , _PyPegen_singleton_seq ( p , a ) ) , Load , EXTRA )': (2, 'factory.createTuple(new ExprTy[] {a}, ExprContextTy.Load, $RANGE)'),
