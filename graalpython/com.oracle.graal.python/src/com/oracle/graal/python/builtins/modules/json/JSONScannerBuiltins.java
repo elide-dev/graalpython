@@ -953,7 +953,7 @@ public final class JSONScannerBuiltins extends PythonBuiltins {
                 if (strict && c < 0x20) {
                     throw decodeError(frame, boundaryCallData, inliningTarget, errorProfile, raisingNode, string, idx - 1, ErrorMessages.INVALID_CTRL_CHARACTER_AT);
                 }
-                if (highSurrogate != 0 ) {
+                if (highSurrogate != 0) {
                     appendCodePointNode.execute(builder, highSurrogate, 1, true);
                     highSurrogate = 0;
                 }
