@@ -120,7 +120,7 @@ public abstract class WriteAttributeToObjectNode extends PNodeWithContext {
         } else {
             klass = context.lookupType((PythonBuiltinClassType) klassOrType);
         }
-        if (context.isInitialized() || value == PNone.NO_VALUE) {
+        if ((context.isInitialized() || value == PNone.NO_VALUE) && klass.getType() != PythonBuiltinClassType.AST) {
             throw PRaiseNode.raiseStatic(this, TypeError, ErrorMessages.CANT_SET_ATTRIBUTE_R_OF_IMMUTABLE_TYPE_N, key, klass);
         } else {
             PDict dict = GetDictIfExistsNode.getUncached().execute(klass);

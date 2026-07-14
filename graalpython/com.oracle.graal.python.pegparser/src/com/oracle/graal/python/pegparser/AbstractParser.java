@@ -117,6 +117,10 @@ public abstract class AbstractParser {
 
     private static final String BARRY_AS_BDFL = "with Barry as BDFL, use '<>' instead of '!='";
 
+    private static final int INT_MAX_STR_DIGITS_THRESHOLD = 640;
+    private static final String INT_MAX_STR_DIGITS_ERROR_FMT = "Exceeds the limit (%d digits) for integer string conversion: value has %d digits; " +
+                    "use sys.set_int_max_str_digits() to increase the limit - Consider hexadecimal for huge integer literals to avoid decimal conversion limits.";
+
     private int currentPos; // position of the mark
     private final ArrayList<Token> tokens;
     private final Tokenizer tokenizer;
@@ -126,6 +130,7 @@ public abstract class AbstractParser {
 
     private final EnumSet<Flags> flags;
     final int featureVersion;
+    private int intMaxStrDigits = 4300;
 
     protected int level = 0;
     boolean callInvalidRules = false;
@@ -423,6 +428,10 @@ public abstract class AbstractParser {
         return expect(Token.Kind.STRING);
     }
 
+    public void setIntMaxStrDigits(int intMaxStrDigits) {
+        this.intMaxStrDigits = intMaxStrDigits;
+    }
+
     /**
      * _PyPegen_number_token
      */
@@ -492,6 +501,13 @@ public abstract class AbstractParser {
             }
             if (overunder) {
                 // overflow
+                if (base == 10) {
+                    int numDigits = number.length() - start;
+                    if (numDigits > INT_MAX_STR_DIGITS_THRESHOLD && intMaxStrDigits > 0 && numDigits > intMaxStrDigits) {
+                        raiseSyntaxError(INT_MAX_STR_DIGITS_ERROR_FMT, intMaxStrDigits, numDigits);
+                        return null; // to skip BigInteger constructor
+                    }
+                }
                 BigInteger bigResult = BigInteger.valueOf(result);
                 BigInteger bigBase = BigInteger.valueOf(base);
                 while (i < number.length()) {

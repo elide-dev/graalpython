@@ -76,7 +76,7 @@ public final class PythonBuiltinClass extends PythonManagedClass {
     @Override
     public void setAttribute(TruffleString name, Object value) {
         CompilerAsserts.neverPartOfCompilation();
-        if (!PythonContext.get(null).isCoreInitialized()) {
+        if (!PythonContext.get(null).isCoreInitialized() || type == PythonBuiltinClassType.AST) {
             setAttributeUnsafe(name, value);
         } else {
             throw PRaiseNode.raiseStatic(null, TypeError, ErrorMessages.CANT_SET_ATTRIBUTE_R_OF_IMMUTABLE_TYPE_N, PyObjectReprAsTruffleStringNode.executeUncached(name), this);
@@ -97,7 +97,7 @@ public final class PythonBuiltinClass extends PythonManagedClass {
     @TruffleBoundary
     @Override
     public void onAttributeUpdate(TruffleString key, Object newValue) {
-        assert !PythonContext.get(null).isCoreInitialized();
+        assert !PythonContext.get(null).isCoreInitialized() || type == PythonBuiltinClassType.AST;
         // Ideally, startup code should not create ASTs that rely on assumptions of props of
         // builtins
         assert getMethodResolutionOrder().getFinalAttributeAssumption(key) == null;
@@ -105,7 +105,7 @@ public final class PythonBuiltinClass extends PythonManagedClass {
         // NO_VALUE changes MRO lookup results without actually changing any Shapes in the MRO, this
         // can prevent some optimizations, so it is best to avoid any code that triggers such code
         // paths during initialization
-        assert newValue != PNone.NO_VALUE;
+        assert newValue != PNone.NO_VALUE || type == PythonBuiltinClassType.AST;
         PythonClass.updateMroShapeSubTypes(this);
     }
 
