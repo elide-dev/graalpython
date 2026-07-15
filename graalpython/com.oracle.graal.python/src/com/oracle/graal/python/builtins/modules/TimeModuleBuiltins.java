@@ -220,8 +220,12 @@ public final class TimeModuleBuiltins extends PythonBuiltins {
     @TruffleBoundary
     public static TimeZone getGlobalTimeZone(PythonContext context) {
         PythonModule timeModule = context.lookupBuiltinModule(T_TIME);
-
         ModuleState moduleState = timeModule.getModuleState(ModuleState.class);
+        if (moduleState == null) {
+            // datetime uses this helper without importing the lazily initialized time module.
+            timeModule = AbstractImportNode.importModule(T_TIME);
+            moduleState = timeModule.getModuleState(ModuleState.class);
+        }
         ZoneId zoneId = moduleState.currentZoneId;
 
         return TimeZone.getTimeZone(zoneId);

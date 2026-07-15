@@ -53,6 +53,22 @@ import org.junit.Test;
 public class TimeModuleTests {
 
     @Test
+    public void datetimeAstimezoneInitializesTimeModule() {
+        try (Context context = Context.newBuilder("python").allowAllAccess(true).build()) {
+            boolean initialized = context.eval(Source.create("python", """
+                            import sys
+                            from datetime import datetime
+
+                            assert "time" not in sys.modules
+                            value = datetime.now().astimezone()
+                            value.utcoffset() is not None and "time" in sys.modules
+                            """)).asBoolean();
+
+            assertEquals(true, initialized);
+        }
+    }
+
+    @Test
     public void strftimeTimezoneMatchesTzsetState() {
         TimeZone previousDefault = TimeZone.getDefault();
         try {
