@@ -226,6 +226,13 @@ public final class TimeModuleBuiltins extends PythonBuiltins {
         PythonModule timeModule = context.lookupBuiltinModule(T_TIME);
 
         ModuleState moduleState = timeModule.getModuleState(ModuleState.class);
+        if (moduleState == null) {
+            // The time module was never imported, so its postInitialize has not run and the module
+            // state is missing. Import it, mirroring CPython's _datetime, which imports the time
+            // module on demand.
+            AbstractImportNode.importModule(T_TIME);
+            moduleState = timeModule.getModuleState(ModuleState.class);
+        }
         ZoneId zoneId = moduleState.currentZoneId;
 
         return TimeZone.getTimeZone(zoneId);
