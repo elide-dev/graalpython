@@ -880,6 +880,9 @@ public final class JSONScannerBuiltins extends PythonBuiltins {
         while (idx < length) {
             int c = codePointAtIndexNode.execute(string, idx++);
             if (c == '"') {
+                if (highSurrogate != 0) {
+                    appendCodePointNode.execute(builder, highSurrogate, 1, true);
+                }
                 // we reached the end of the string literal
                 nextIdx.value = idx;
                 return builderToStringNode.execute(builder);
@@ -934,6 +937,10 @@ public final class JSONScannerBuiltins extends PythonBuiltins {
                 }
                 if (isLowSurrogate(c) && highSurrogate != 0) {
                     c = Character.toCodePoint(highSurrogate, (char) c);
+                    highSurrogate = 0;
+                } else if (highSurrogate != 0) {
+                    appendCodePointNode.execute(builder, highSurrogate, 1, true);
+                    highSurrogate = 0;
                 }
                 if (isHighSurrogate(c)) {
                     highSurrogate = (char) c;
@@ -945,6 +952,10 @@ public final class JSONScannerBuiltins extends PythonBuiltins {
                 // any other character: check if in strict mode
                 if (strict && c < 0x20) {
                     throw decodeError(frame, boundaryCallData, inliningTarget, errorProfile, raisingNode, string, idx - 1, ErrorMessages.INVALID_CTRL_CHARACTER_AT);
+                }
+                if (highSurrogate != 0) {
+                    appendCodePointNode.execute(builder, highSurrogate, 1, true);
+                    highSurrogate = 0;
                 }
                 appendCodePointNode.execute(builder, c, 1, true);
             }
