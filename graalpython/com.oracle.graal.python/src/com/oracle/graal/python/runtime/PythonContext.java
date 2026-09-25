@@ -189,6 +189,7 @@ import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.interop.UnsupportedMessageException;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
+import com.oracle.truffle.api.source.Source;
 import com.oracle.truffle.api.strings.TruffleString;
 import com.oracle.truffle.api.strings.TruffleString.Encoding;
 import com.oracle.truffle.api.utilities.CyclicAssumption;
@@ -1184,8 +1185,13 @@ public final class PythonContext extends Python3Core {
             postInitialize(env);
             if (!env.isPreInitialization()) {
                 importSiteIfForced();
-            } else if (posixSupport instanceof PreInitPosixSupport) {
-                ((PreInitPosixSupport) posixSupport).checkLeakingResources();
+            } else {
+                if (posixSupport instanceof PreInitPosixSupport) {
+                    ((PreInitPosixSupport) posixSupport).checkLeakingResources();
+                }
+                if (Boolean.getBoolean(PRE_INITIALIZE_PARSER_PROPERTY)) {
+                    preInitializeParser();
+                }
             }
         } finally {
             if (env.isPreInitialization()) {
@@ -1220,6 +1226,29 @@ public final class PythonContext extends Python3Core {
             releaseGil();
         }
 
+    }
+
+    /**
+     * Image build time system property that enables {@link #preInitializeParser()}. It is a system
+     * property, not a language option, because language options set for the image build do not
+     * reach the pre-initialized context. Off by default.
+     */
+    private static final String PRE_INITIALIZE_PARSER_PROPERTY = "polyglot.image-build-time.python.PreInitializeParser";
+
+    /**
+     * Parses a trivial internal source during context pre-initialization, so that the parser, the
+     * compiler and the specializations they use are initialized when the image is built rather than
+     * on the first parse at run time. Loading frozen modules during pre-initialization does not
+     * reach these paths. A failure is not fatal: the first parse at run time then initializes them.
+     */
+    private void preInitializeParser() {
+        try {
+            Source source = Source.newBuilder(PythonLanguage.ID, "pass\n", "<preinit-parser>").mimeType(PythonLanguage.MIME_TYPE).internal(true).cached(false).build();
+            env.parseInternal(source);
+            LOGGER.fine("Pre-initialized the parser");
+        } catch (RuntimeException e) {
+            LOGGER.log(Level.WARNING, "Parser pre-initialization failed", e);
+        }
     }
 
     private void importSiteIfForced() {
