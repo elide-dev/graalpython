@@ -7,7 +7,12 @@ import io
 
 # GraalPy change: expose the stub opcode metadata without importing _opcode
 from opcode import *
-from opcode import __all__ as _opcodes_all
+from opcode import (
+    __all__ as _opcodes_all,
+    _cache_format,
+    _inline_cache_entries,
+    _nb_ops,
+)
 
 __all__ = ["code_info", "dis", "disassemble", "distb", "disco",
            "findlinestarts", "findlabels", "show_code",
