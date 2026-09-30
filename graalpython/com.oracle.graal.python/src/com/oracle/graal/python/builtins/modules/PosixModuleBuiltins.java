@@ -384,7 +384,7 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
                         k = posixLib.createPathFromString(posixSupport, toTruffleStringUncached(pyenvLauncherKey));
                         v = posixLib.createPathFromString(posixSupport, value);
                     }
-                    posixLib.setenv(posixSupport, k, v, true);
+                    posixSupport.setenv(k, v, true);
                 } catch (PosixException ignored) {
                 }
                 val = toEnv(language, value);
@@ -470,7 +470,7 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
             }
             auditNode.audit(frame, inliningTarget, T_OS_PUTENV, nameObject, valueObject);
             try {
-                posixLib.setenv(posixSupport, nameOpaque, valueOpaque, true);
+                posixSupport.setenv(nameOpaque, valueOpaque, true);
             } catch (PosixException e) {
                 throw constructAndRaiseNode.get(inliningTarget).raiseOSErrorFromPosixException(frame, e);
             }
@@ -537,7 +537,7 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
             }
             auditNode.audit(frame, inliningTarget, T_OS_UNSETENV, nameObject);
             try {
-                posixLib.unsetenv(context.getPosixSupport(), nameOpaque);
+                context.getPosixSupport().unsetenv(nameOpaque);
             } catch (PosixException e) {
                 throw constructAndRaiseNode.get(inliningTarget).raiseOSErrorFromPosixException(frame, e);
             }
