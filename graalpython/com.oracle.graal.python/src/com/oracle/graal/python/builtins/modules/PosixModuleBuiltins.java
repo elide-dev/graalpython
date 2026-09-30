@@ -2697,28 +2697,27 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
         @Specialization
         static int waitstatusToExitcode(VirtualFrame frame, Object statusObj,
                         @Bind PythonContext context,
-                        @CachedLibrary("context.getPosixSupport()") PosixSupportLibrary posixLib,
                         @Bind Node inliningTarget,
                         @Cached PyLongAsIntNode longAsInt,
                         @Cached PRaiseNode raiseNode) {
             int status = longAsInt.execute(frame, inliningTarget, statusObj);
             PosixSupport posixSupport = context.getPosixSupport();
-            if (posixLib.wifexited(posixSupport, status)) {
-                int exitcode = posixLib.wexitstatus(posixSupport, status);
+            if (posixSupport.wifexited(status)) {
+                int exitcode = posixSupport.wexitstatus(status);
                 if (exitcode < 0) {
                     throw raiseNode.raise(inliningTarget, PythonBuiltinClassType.ValueError, ErrorMessages.INVALID_WEXITSTATUS, exitcode);
                 }
                 return exitcode;
             }
-            if (posixLib.wifsignaled(posixSupport, status)) {
-                int signum = posixLib.wtermsig(posixSupport, status);
+            if (posixSupport.wifsignaled(status)) {
+                int signum = posixSupport.wtermsig(status);
                 if (signum <= 0) {
                     throw raiseNode.raise(inliningTarget, PythonBuiltinClassType.ValueError, ErrorMessages.INVALID_WTERMSIG, signum);
                 }
                 return -signum;
             }
-            if (posixLib.wifstopped(posixSupport, status)) {
-                int signum = posixLib.wstopsig(posixSupport, status);
+            if (posixSupport.wifstopped(status)) {
+                int signum = posixSupport.wstopsig(status);
                 throw raiseNode.raise(inliningTarget, PythonBuiltinClassType.ValueError, ErrorMessages.PROCESS_STOPPED_BY_DELIVERY_OF_SIGNAL, signum);
             }
             throw raiseNode.raise(inliningTarget, PythonBuiltinClassType.ValueError, ErrorMessages.INVALID_WAIT_STATUS, status);
@@ -2736,9 +2735,8 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
 
         @Specialization
         static boolean wcoredump(int status,
-                        @Bind PythonContext context,
-                        @CachedLibrary("context.getPosixSupport()") PosixSupportLibrary posixLib) {
-            return posixLib.wcoredump(context.getPosixSupport(), status);
+                        @Bind PythonContext context) {
+            return context.getPosixSupport().wcoredump(status);
         }
     }
 
@@ -2753,9 +2751,8 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
 
         @Specialization
         static boolean wifcontinued(int status,
-                        @Bind PythonContext context,
-                        @CachedLibrary("context.getPosixSupport()") PosixSupportLibrary posixLib) {
-            return posixLib.wifcontinued(context.getPosixSupport(), status);
+                        @Bind PythonContext context) {
+            return context.getPosixSupport().wifcontinued(status);
         }
     }
 
@@ -2770,9 +2767,8 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
 
         @Specialization
         static boolean wifstopped(int status,
-                        @Bind PythonContext context,
-                        @CachedLibrary("context.getPosixSupport()") PosixSupportLibrary posixLib) {
-            return posixLib.wifstopped(context.getPosixSupport(), status);
+                        @Bind PythonContext context) {
+            return context.getPosixSupport().wifstopped(status);
         }
     }
 
@@ -2787,9 +2783,8 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
 
         @Specialization
         static boolean wifsignaled(int status,
-                        @Bind PythonContext context,
-                        @CachedLibrary("context.getPosixSupport()") PosixSupportLibrary posixLib) {
-            return posixLib.wifsignaled(context.getPosixSupport(), status);
+                        @Bind PythonContext context) {
+            return context.getPosixSupport().wifsignaled(status);
         }
     }
 
@@ -2804,9 +2799,8 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
 
         @Specialization
         static boolean wifexited(int status,
-                        @Bind PythonContext context,
-                        @CachedLibrary("context.getPosixSupport()") PosixSupportLibrary posixLib) {
-            return posixLib.wifexited(context.getPosixSupport(), status);
+                        @Bind PythonContext context) {
+            return context.getPosixSupport().wifexited(status);
         }
     }
 
@@ -2821,9 +2815,8 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
 
         @Specialization
         static int wexitstatus(int status,
-                        @Bind PythonContext context,
-                        @CachedLibrary("context.getPosixSupport()") PosixSupportLibrary posixLib) {
-            return posixLib.wexitstatus(context.getPosixSupport(), status);
+                        @Bind PythonContext context) {
+            return context.getPosixSupport().wexitstatus(status);
         }
     }
 
@@ -2838,9 +2831,8 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
 
         @Specialization
         int wtermsig(int status,
-                        @Bind PythonContext context,
-                        @CachedLibrary("context.getPosixSupport()") PosixSupportLibrary posixLib) {
-            return posixLib.wtermsig(context.getPosixSupport(), status);
+                        @Bind PythonContext context) {
+            return context.getPosixSupport().wtermsig(status);
         }
     }
 
@@ -2855,9 +2847,8 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
 
         @Specialization
         static int wstopsig(int status,
-                        @Bind PythonContext context,
-                        @CachedLibrary("context.getPosixSupport()") PosixSupportLibrary posixLib) {
-            return posixLib.wstopsig(context.getPosixSupport(), status);
+                        @Bind PythonContext context) {
+            return context.getPosixSupport().wstopsig(status);
         }
     }
 
