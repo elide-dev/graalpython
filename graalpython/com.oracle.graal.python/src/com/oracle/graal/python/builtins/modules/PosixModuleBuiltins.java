@@ -627,9 +627,8 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
     @GenerateNodeFactory
     public abstract static class GetUidNode extends PythonBuiltinNode {
         @Specialization
-        static long getUid(@Bind PythonContext context,
-                        @CachedLibrary("context.getPosixSupport()") PosixSupportLibrary posixLib) {
-            return posixLib.getuid(context.getPosixSupport());
+        static long getUid(@Bind PythonContext context) {
+            return context.getPosixSupport().getuid();
         }
     }
 
@@ -639,10 +638,9 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
         @Specialization
         static long getUid(@Bind Node inliningTarget,
                         @Bind PythonContext context,
-                        @CachedLibrary("context.getPosixSupport()") PosixSupportLibrary posixLib,
                         @Cached PConstructAndRaiseNode.Lazy constructAndRaiseNode) {
             try {
-                return posixLib.geteuid(context.getPosixSupport());
+            return context.getPosixSupport().geteuid();
             } catch (PosixException e) {
                 throw constructAndRaiseNode.get(inliningTarget).raiseOSErrorFromPosixException(null, e);
             }
@@ -653,9 +651,8 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
     @GenerateNodeFactory
     public abstract static class GetGidNode extends PythonBuiltinNode {
         @Specialization
-        static long getGid(@Bind PythonContext context,
-                        @CachedLibrary("context.getPosixSupport()") PosixSupportLibrary posixLib) {
-            return posixLib.getgid(context.getPosixSupport());
+        static long getGid(@Bind PythonContext context) {
+            return context.getPosixSupport().getgid();
         }
     }
 
@@ -665,10 +662,9 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
         @Specialization
         static long getGid(@Bind Node inliningTarget,
                         @Bind PythonContext context,
-                        @CachedLibrary("context.getPosixSupport()") PosixSupportLibrary posixLib,
                         @Cached PConstructAndRaiseNode.Lazy constructAndRaiseNode) {
             try {
-                return posixLib.getegid(context.getPosixSupport());
+            return context.getPosixSupport().getegid();
             } catch (PosixException e) {
                 throw constructAndRaiseNode.get(inliningTarget).raiseOSErrorFromPosixException(null, e);
             }
@@ -849,10 +845,9 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
         static Object getgroups(VirtualFrame frame,
                         @Bind Node inliningTarget,
                         @Bind PythonContext context,
-                        @CachedLibrary("context.getPosixSupport()") PosixSupportLibrary posixLib,
                         @Cached PConstructAndRaiseNode.Lazy constructAndRaiseNode) {
             try {
-                long[] groups = posixLib.getgroups(context.getPosixSupport());
+                long[] groups = context.getPosixSupport().getgroups();
                 return PFactory.createList(context.getLanguage(inliningTarget), new LongSequenceStorage(groups));
             } catch (PosixException e) {
                 throw constructAndRaiseNode.get(inliningTarget).raiseOSErrorFromPosixException(frame, e);
