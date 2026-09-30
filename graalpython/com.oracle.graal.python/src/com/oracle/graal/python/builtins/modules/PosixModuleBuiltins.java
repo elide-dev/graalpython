@@ -378,8 +378,8 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
                     Object k;
                     Object v;
                     if (PythonLanguage.getPythonOS() == PythonOS.PLATFORM_WIN32) {
-                        k = posixLib.createWideStringFromString(posixSupport, toTruffleStringUncached(pyenvLauncherKey));
-                        v = posixLib.createWideStringFromString(posixSupport, value);
+                        k = posixSupport.createWideStringFromString(toTruffleStringUncached(pyenvLauncherKey));
+                        v = posixSupport.createWideStringFromString(value);
                     } else {
                         k = posixSupport.createPathFromString(toTruffleStringUncached(pyenvLauncherKey));
                         v = posixSupport.createPathFromString(value);
@@ -458,14 +458,14 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
             if (PythonLanguage.getPythonOS() == PythonOS.PLATFORM_WIN32) {
                 TruffleString name = (TruffleString) nameObject;
                 TruffleString value = (TruffleString) valueObject;
-                nameOpaque = checkNull(inliningTarget, posixLib.createWideStringFromString(posixSupport, name), raiseNode);
-                valueOpaque = checkNull(inliningTarget, posixLib.createWideStringFromString(posixSupport, value), raiseNode);
+                nameOpaque = checkNull(inliningTarget, posixSupport.createWideStringFromString(name), raiseNode);
+                valueOpaque = checkNull(inliningTarget, posixSupport.createWideStringFromString(value), raiseNode);
                 checkWindowsEnvName(inliningTarget, name, codePointLengthNode, indexOfCodePointNode, raiseNode);
             } else {
                 byte[] name = toBytesNode.execute((PBytes) nameObject);
                 byte[] value = toBytesNode.execute((PBytes) valueObject);
-                nameOpaque = checkNull(inliningTarget, posixLib.createCStringFromBytes(posixSupport, name), raiseNode);
-                valueOpaque = checkNull(inliningTarget, posixLib.createCStringFromBytes(posixSupport, value), raiseNode);
+                nameOpaque = checkNull(inliningTarget, posixSupport.createCStringFromBytes(name), raiseNode);
+                valueOpaque = checkNull(inliningTarget, posixSupport.createCStringFromBytes(value), raiseNode);
                 checkEqualSign(inliningTarget, name, raiseNode);
             }
             auditNode.audit(frame, inliningTarget, T_OS_PUTENV, nameObject, valueObject);
@@ -529,11 +529,11 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
             Object nameOpaque;
             if (PythonLanguage.getPythonOS() == PythonOS.PLATFORM_WIN32) {
                 TruffleString name = (TruffleString) nameObject;
-                nameOpaque = checkNull(inliningTarget, posixLib.createWideStringFromString(context.getPosixSupport(), name), raiseNode);
+                nameOpaque = checkNull(inliningTarget, context.getPosixSupport().createWideStringFromString(name), raiseNode);
                 PutenvNode.checkWindowsEnvName(inliningTarget, name, codePointLengthNode, indexOfCodePointNode, raiseNode);
             } else {
                 byte[] name = toBytesNode.execute((PBytes) nameObject);
-                nameOpaque = checkNull(inliningTarget, posixLib.createCStringFromBytes(context.getPosixSupport(), name), raiseNode);
+                nameOpaque = checkNull(inliningTarget, context.getPosixSupport().createCStringFromBytes(name), raiseNode);
             }
             auditNode.audit(frame, inliningTarget, T_OS_UNSETENV, nameObject);
             try {
@@ -594,7 +594,7 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
             for (int i = 0; i < args.length; ++i) {
                 Object opaquePath = toOpaquePathNode.execute(frame, inliningTarget, args[i], i == 0);
                 Buffer bytes = context.getPosixSupport().getPathAsBytes(opaquePath);
-                opaqueArgs[i] = posixLib.createCStringFromBytes(context.getPosixSupport(), bytes.data);
+                opaqueArgs[i] = context.getPosixSupport().createCStringFromBytes(bytes.data);
             }
             LoopNode.reportLoopCount(inliningTarget, args.length);
             // TODO ValueError "execv() arg 2 first element cannot be empty"
@@ -2864,9 +2864,9 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
             try {
                 Object cmdOpaque;
                 if (PythonLanguage.getPythonOS() == PythonOS.PLATFORM_WIN32) {
-                    cmdOpaque = posixLib.createWideStringFromString(context.getPosixSupport(), (TruffleString) command);
+                    cmdOpaque = context.getPosixSupport().createWideStringFromString((TruffleString) command);
                 } else {
-                    cmdOpaque = posixLib.createCStringFromBytes(context.getPosixSupport(), toBytesNode.execute((PBytes) command));
+                    cmdOpaque = context.getPosixSupport().createCStringFromBytes(toBytesNode.execute((PBytes) command));
                 }
                 return context.getPosixSupport().system(cmdOpaque);
             } finally {
