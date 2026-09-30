@@ -898,7 +898,6 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
         static int open(VirtualFrame frame, PosixPath path, int flags, int mode, int dirFd,
                         @Bind Node inliningTarget,
                         @Bind PythonContext context,
-                        @CachedLibrary("context.getPosixSupport()") PosixSupportLibrary posixLib,
                         @Cached SysModuleBuiltins.AuditNode auditNode,
                         @Cached InlinedBranchProfile errorProfile,
                         @Cached GilNode gil,
@@ -912,7 +911,7 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
             try {
                 while (true) {
                     try {
-                        return posixLib.openat(context.getPosixSupport(), dirFd, path.value, fixedFlags, mode);
+                        return context.getPosixSupport().openat(dirFd, path.value, fixedFlags, mode);
                     } catch (PosixException e) {
                         errorProfile.enter(inliningTarget);
                         if (e.hasErrno(OSErrorEnum.EINTR)) {
@@ -943,13 +942,12 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
         static PNone close(VirtualFrame frame, int fd,
                         @Bind Node inliningTarget,
                         @Bind PythonContext context,
-                        @CachedLibrary("context.getPosixSupport()") PosixSupportLibrary posixLib,
                         @Cached GilNode gil,
                         @Cached PConstructAndRaiseNode.Lazy constructAndRaiseNode) {
             try {
                 gil.release(true);
                 try {
-                    posixLib.close(context.getPosixSupport(), fd);
+                    context.getPosixSupport().close(fd);
                 } finally {
                     gil.acquire();
                 }
@@ -2056,7 +2054,7 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
         } catch (PosixException e) {
             if (dupFd != -1) {
                 try {
-                    posixLib.close(posixSupport, dupFd);
+                    posixSupport.close(dupFd);
                 } catch (PosixException e1) {
                     // ignored
                 }
