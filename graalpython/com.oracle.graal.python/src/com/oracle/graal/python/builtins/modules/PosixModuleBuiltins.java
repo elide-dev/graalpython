@@ -1229,10 +1229,9 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
         static long lseek(VirtualFrame frame, int fd, long pos, int how,
                         @Bind Node inliningTarget,
                         @Bind PythonContext context,
-                        @CachedLibrary("context.getPosixSupport()") PosixSupportLibrary posixLib,
                         @Cached PConstructAndRaiseNode.Lazy constructAndRaiseNode) {
             try {
-                return posixLib.lseek(context.getPosixSupport(), fd, pos, mapPythonSeekWhenceToPosix(how));
+                return context.getPosixSupport().lseek(fd, pos, mapPythonSeekWhenceToPosix(how));
             } catch (PosixException e) {
                 throw constructAndRaiseNode.get(inliningTarget).raiseOSErrorFromPosixException(frame, e);
             }
@@ -1254,7 +1253,6 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
         static PNone ftruncate(VirtualFrame frame, int fd, long length,
                         @Bind Node inliningTarget,
                         @Bind PythonContext context,
-                        @CachedLibrary("context.getPosixSupport()") PosixSupportLibrary posixLib,
                         @Cached SysModuleBuiltins.AuditNode auditNode,
                         @Cached GilNode gil,
                         @Cached InlinedBranchProfile errorProfile,
@@ -1264,7 +1262,7 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
                 try {
                     gil.release(true);
                     try {
-                        posixLib.ftruncate(context.getPosixSupport(), fd, length);
+                        context.getPosixSupport().ftruncate(fd, length);
                     } finally {
                         gil.acquire();
                     }
@@ -1296,7 +1294,6 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
         static PNone truncate(VirtualFrame frame, PosixPath path, long length,
                         @Bind Node inliningTarget,
                         @Bind PythonContext context,
-                        @CachedLibrary("context.getPosixSupport()") PosixSupportLibrary posixLib,
                         @Exclusive @Cached SysModuleBuiltins.AuditNode auditNode,
                         @Exclusive @Cached GilNode gil,
                         @Exclusive @Cached PConstructAndRaiseNode.Lazy constructAndRaiseNode) {
@@ -1304,7 +1301,7 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
             try {
                 gil.release(true);
                 try {
-                    posixLib.truncate(context.getPosixSupport(), path.value, length);
+                    context.getPosixSupport().truncate(path.value, length);
                 } finally {
                     gil.acquire();
                 }
@@ -1318,12 +1315,11 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
         static PNone ftruncate(VirtualFrame frame, PosixFd fd, long length,
                         @Bind Node inliningTarget,
                         @Bind PythonContext context,
-                        @CachedLibrary("context.getPosixSupport()") PosixSupportLibrary posixLib,
                         @Exclusive @Cached SysModuleBuiltins.AuditNode auditNode,
                         @Exclusive @Cached GilNode gil,
                         @Exclusive @Cached InlinedBranchProfile errorProfile,
                         @Exclusive @Cached PConstructAndRaiseNode.Lazy constructAndRaiseNode) {
-            return FtruncateNode.ftruncate(frame, fd.fd, length, inliningTarget, context, posixLib, auditNode, gil, errorProfile, constructAndRaiseNode);
+            return FtruncateNode.ftruncate(frame, fd.fd, length, inliningTarget, context, auditNode, gil, errorProfile, constructAndRaiseNode);
         }
     }
 
