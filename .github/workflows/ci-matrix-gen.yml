@@ -159,6 +159,9 @@ jobs:
           # can have partial interpreters (and a shared uv cache) left by earlier jobs.
           export UV_INSTALL_DIR="$RUNNER_TEMP/uv/bin" UV_PYTHON_INSTALL_DIR="$RUNNER_TEMP/uv/python" UV_NO_MODIFY_PATH=1
           export UV_CACHE_DIR="$RUNNER_TEMP/uv/cache" UV_LINK_MODE=copy UV_PYTHON_PREFERENCE=only-managed
+          # The temp directory survives between jobs on these runners: a partial interpreter from an
+          # earlier job would be reused ("Python installation is missing a _sysconfigdata_ file").
+          rm -rf "$RUNNER_TEMP/uv"
           curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
           rm -rf "$RUNNER_TEMP/python-venv"
           "$UV_INSTALL_DIR/uv" venv --seed --python "$PYTHON_VERSION" "$RUNNER_TEMP/python-venv"
