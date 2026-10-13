@@ -82,6 +82,17 @@ jobs:
       matrix:
         include: ${{ fromJson(needs.generate-tier1.outputs.artifact_matrix) }}
     steps: &buildsteps
+      # The self-hosted runners keep their workspace between jobs, and these steps clone
+      # mx and other repositories next to the checkout, so start from an empty workspace.
+      - name: Clean workspace
+        if: runner.os != 'Windows'
+        shell: bash
+        run: find "${GITHUB_WORKSPACE:?}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+      - name: Clean workspace (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Get-ChildItem -Force -LiteralPath $env:GITHUB_WORKSPACE | Remove-Item -Recurse -Force
+
       - name: Process matrix downloads
         if: ${{ matrix.downloads_steps }}
         run: |
@@ -91,8 +102,13 @@ jobs:
         shell: bash
         if: runner.os != 'Windows'
         run: |
+          # A UTF-8 locale, as on GitHub's runners: the JDK uses it for file names (some CA
+          # certificates in /etc/ssl/certs have non-ASCII names).
+          if [ "$RUNNER_OS" = macOS ]; then echo "LANG=en_US.UTF-8" >> $GITHUB_ENV; echo "LC_ALL=en_US.UTF-8" >> $GITHUB_ENV;
+          else echo "LANG=C.UTF-8" >> $GITHUB_ENV; echo "LC_ALL=C.UTF-8" >> $GITHUB_ENV; fi
           matrix_env='${{ toJson(matrix.env) }}'
-          echo $matrix_env | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> tmp.env
+          # python3 rather than jq, which the self-hosted runners don't all have.
+          echo $matrix_env | python3 -c 'import json, sys; [print(f"{k}={v}") for k, v in json.load(sys.stdin).items()]' >> tmp.env
           while IFS= read -r line; do
             eval "echo \"$line\"" >> $GITHUB_ENV
           done < tmp.env
