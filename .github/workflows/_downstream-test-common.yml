@@ -29,10 +29,10 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - id: ubuntu-latest
+          - id: linux-amd64-cipool
             platform: linux
             arch: amd64
-          - id: macos-latest
+          - id: macos-arm64-cipool
             platform: macos
             arch: aarch64
 

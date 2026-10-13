@@ -28,15 +28,12 @@ permissions:
 
 jobs:
   build_wheels:
+    # Elide's fork builds on its self-hosted runner pool, not on GitHub-hosted runners.
     runs-on: >-
-      ${{ contains(inputs.platform, 'self-hosted-linux-amd64') && fromJson('["self-hosted", "Linux", "X86"]') ||
-          contains(inputs.platform, 'self-hosted-linux-aarch64') && fromJson('["self-hosted", "Linux", "ARM64"]') ||
-          contains(inputs.platform, 'self-hosted-macos') && fromJson('["self-hosted", "macOS"]') ||
-          contains(inputs.platform, 'self-hosted-windows') && fromJson('["self-hosted", "Windows"]') ||
-          contains(inputs.platform, 'linux-amd64') && fromJson('["ubuntu-latest"]') ||
-          contains(inputs.platform, 'linux-aarch64') && fromJson('["ubuntu-24.04-arm"]') ||
-          contains(inputs.platform, 'windows') && fromJson('["windows-latest"]') ||
-          contains(inputs.platform, 'macos') && fromJson('["macos-latest"]') }}
+      ${{ contains(inputs.platform, 'aarch64') && contains(inputs.platform, 'linux') && 'linux-arm64-cipool' ||
+          contains(inputs.platform, 'linux') && 'linux-amd64-cipool' ||
+          contains(inputs.platform, 'windows') && 'windows-amd64-cipool' ||
+          contains(inputs.platform, 'macos') && 'macos-arm64-cipool' }}
     container: >-
       ${{ contains(inputs.platform, 'linux-amd64') && 'quay.io/pypa/manylinux_2_28_x86_64' ||
           contains(inputs.platform, 'linux-aarch64') && 'quay.io/pypa/manylinux_2_28_aarch64' ||

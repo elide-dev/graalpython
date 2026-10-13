@@ -75,17 +75,21 @@ DOWNLOADS_LINKS = {
     "ECLIPSE": "https://www.eclipse.org/downloads/download.php?file=/eclipse/downloads/drops4/R-4.26-202211231800/eclipse-SDK-4.26-linux-gtk-x86_64.tar.gz"
 }
 
-# Github Runners OSS
+# Runner labels by required capabilities. Elide's fork builds and tests on its
+# self-hosted runner pool, not on GitHub-hosted runners.
+LINUX_AMD64_RUNNER = "linux-amd64-cipool"
+LINUX_AARCH64_RUNNER = "linux-arm64-cipool"
+WINDOWS_AMD64_RUNNER = "windows-amd64-cipool"
 OSS = {
-    "ubuntu-latest": ["linux", "amd64"],
-    "ubuntu-24.04-arm": ["linux", "aarch64"],
-    "windows-latest": ["windows", "amd64"]
+    LINUX_AMD64_RUNNER: ["linux", "amd64"],
+    LINUX_AARCH64_RUNNER: ["linux", "aarch64"],
+    WINDOWS_AMD64_RUNNER: ["windows", "amd64"]
 }
 
 # Override unavailable Python versions for some OS/Arch / job name combinations
 PYTHON_VERSIONS = {
-    "ubuntu-24.04-arm": "3.12.8",
-    "ubuntu-latest": "3.12.8",
+    LINUX_AARCH64_RUNNER: "3.12.8",
+    LINUX_AMD64_RUNNER: "3.12.8",
     "style-gate": "3.8.12",
     "style-ecj-gate": "3.8.12",
 }
@@ -119,7 +123,7 @@ class Job:
         for os, caps in OSS.items():
             if all(required in capabilities for required in caps): return os
 
-        return "ubuntu-latest"
+        return LINUX_AMD64_RUNNER
 
     @cached_property
     def name(self) -> str:
@@ -132,7 +136,7 @@ class Job:
     @cached_property
     def env(self) -> dict[str, str]:
         environment = self.job.get("environment", {}) | DEFAULT_ENV
-        if self.runs_on == "windows-latest":
+        if self.runs_on == WINDOWS_AMD64_RUNNER:
             def _to_windows_env_format(s: str) -> str:
                 # Replace ${VAR} and $VAR with %VAR%
                 s = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", r"%\1%", s)
@@ -180,7 +184,7 @@ class Job:
                 k = k[3:]
             if any(excluded in k for excluded in EXCLUDED_SYSTEM_PACKAGES):
                 continue
-            system_packages.append(f"'{k}'" if self.runs_on != "windows-latest" else f"{k}")
+            system_packages.append(f"'{k}'" if self.runs_on != WINDOWS_AMD64_RUNNER else f"{k}")
         return system_packages
 
     @cached_property
@@ -191,13 +195,13 @@ class Job:
                 key = k[4:]
                 if key in PYTHON_PACKAGES_VERSIONS: continue
                 python_packages.append(f"{key}{v}")
-        return [f"'{pkg}'" if self.runs_on != "windows-latest" else f"{pkg}" for pkg in python_packages]
+        return [f"'{pkg}'" if self.runs_on != WINDOWS_AMD64_RUNNER else f"{pkg}" for pkg in python_packages]
 
     def get_download_steps(self, key: str, version: str) -> str:
         download_link = self.get_download_link(key, version)
         filename = download_link.split('/')[-1]
 
-        if self.runs_on == "windows-latest":
+        if self.runs_on == WINDOWS_AMD64_RUNNER:
             return (f"""
                 Invoke-WebRequest -Uri {download_link} -OutFile {filename}
                 Expand-Archive -Path {filename} -DestinationPath .
