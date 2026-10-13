@@ -126,9 +126,25 @@ jobs:
 
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        if: ${{ matrix.python_version }}
+        if: ${{ runner.os == 'Windows' && matrix.python_version }}
         with:
           python-version: ${{ matrix.python_version }}
+      # actions/setup-python only has interpreters for GitHub's own runner images, so on
+      # the self-hosted Linux and macOS runners the version comes from uv (python-build-standalone),
+      # in a virtualenv with pip that is put first on the PATH.
+      - name: Set up Python with uv
+        if: ${{ runner.os != 'Windows' && matrix.python_version }}
+        shell: bash
+        env:
+          UV_VERSION: 0.12.20
+          PYTHON_VERSION: ${{ matrix.python_version }}
+        run: |
+          export UV_INSTALL_DIR="$RUNNER_TEMP/uv/bin" UV_PYTHON_INSTALL_DIR="$RUNNER_TEMP/uv/python" UV_NO_MODIFY_PATH=1
+          curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
+          rm -rf "$RUNNER_TEMP/python-venv"
+          "$UV_INSTALL_DIR/uv" venv --seed --python "$PYTHON_VERSION" "$RUNNER_TEMP/python-venv"
+          echo "$RUNNER_TEMP/python-venv/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/python-venv/bin/python" --version
       - name: Install python packages on Unix
         if: ${{ runner.os != 'Windows' && matrix.python_packages }}
         run: |
