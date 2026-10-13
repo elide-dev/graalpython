@@ -332,7 +332,8 @@ public final class PosixModuleBuiltins extends PythonBuiltins {
 
         PosixSupport posixSupport = core.getContext().getPosixSupport();
         PythonModule posix = PythonLanguage.getPythonOS() == PythonOS.PLATFORM_WIN32
-            ? core.lookupBuiltinModule(T_NT) : core.lookupBuiltinModule(T_POSIX);
+                        ? core.lookupBuiltinModule(T_NT)
+                        : core.lookupBuiltinModule(T_POSIX);
 
         if (posixSupport.getBackend().toJavaStringUncached().equals("java")) {
             posix.setAttribute(toTruffleStringUncached("geteuid"), PNone.NO_VALUE);
