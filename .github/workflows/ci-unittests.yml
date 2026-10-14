@@ -18,8 +18,13 @@ jobs:
       - name: Install libabigail
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y abigail-tools
+          # The self-hosted runners keep abigail-tools installed; only touch apt when it is
+          # missing, so a broken dpkg state left by another job's package install does not fail
+          # the check.
+          if ! command -v abidiff >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y abigail-tools
+          fi
 
       - name: Get mx and labsjdk
         shell: bash
