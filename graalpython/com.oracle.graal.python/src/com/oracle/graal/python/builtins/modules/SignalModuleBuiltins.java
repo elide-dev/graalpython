@@ -52,6 +52,9 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.oracle.graal.python.PythonLanguage;
 import com.oracle.graal.python.annotations.ArgumentClinic;
@@ -72,6 +75,7 @@ import com.oracle.graal.python.lib.PyTimeFromObjectNode.RoundType;
 import com.oracle.graal.python.nodes.ErrorMessages;
 import com.oracle.graal.python.nodes.PConstructAndRaiseNode;
 import com.oracle.graal.python.nodes.PRaiseNode;
+import com.oracle.graal.python.nodes.WriteUnraisableNode;
 import com.oracle.graal.python.nodes.function.PythonBuiltinBaseNode;
 import com.oracle.graal.python.nodes.function.PythonBuiltinNode;
 import com.oracle.graal.python.nodes.function.builtins.PythonBinaryClinicBuiltinNode;
@@ -96,6 +100,9 @@ import com.oracle.truffle.api.dsl.Bind;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.GenerateNodeFactory;
 import com.oracle.truffle.api.dsl.NodeFactory;
+import com.oracle.truffle.api.ThreadLocalAction;
+import com.oracle.truffle.api.TruffleSafepoint;
+import com.oracle.truffle.api.TruffleLogger;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.Node;
@@ -106,6 +113,8 @@ import sun.misc.SignalHandler;
 
 @CoreFunctions(defineModule = "_signal", isEager = true)
 public final class SignalModuleBuiltins extends PythonBuiltins {
+
+    private static final TruffleLogger LOGGER = PythonLanguage.getLogger(SignalModuleBuiltins.class);
     private static final int ITIMER_REAL = 0;
     private static final int ITIMER_VIRTUAL = 1;
     private static final int ITIMER_PROF = 2;
@@ -181,7 +190,7 @@ public final class SignalModuleBuiltins extends PythonBuiltins {
         }
 
         context.registerAsyncAction(() -> {
-            SignalTriggerAction poll = moduleData.signalQueue.poll();
+            AsyncHandler.AsyncAction poll = moduleData.signalQueue.poll();
             if (PythonOptions.AUTOMATIC_ASYNC_ACTIONS) {
                 try {
                     while (poll == null) {
@@ -202,6 +211,36 @@ public final class SignalModuleBuiltins extends PythonBuiltins {
         }
     }
 
+    /**
+     * Runs Python signal handlers whose signal has already been received but whose handler has not
+     * run yet on the main thread. CPython runs pending handlers when a blocking call such as
+     * {@code select()} returns, so that a handler's exception interrupts the call; here the handler
+     * is submitted to the main thread by another thread, so this waits (bounded) for that to happen.
+     * Cheap when no signal is pending, which is the common case.
+     */
+    @TruffleBoundary
+    public static void runPendingSignalHandlers(Node node, PythonContext context) {
+        if (Thread.currentThread() != context.getMainThread()) {
+            return;
+        }
+        PythonModule mod = context.lookupBuiltinModule(T__SIGNAL);
+        ModuleData data = mod == null ? null : mod.getModuleState(ModuleData.class);
+        if (data == null || data.pendingHandlers.get() == 0) {
+            return;
+        }
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(100);
+        while (data.pendingHandlers.get() > 0 && System.nanoTime() < deadline) {
+            TruffleSafepoint.poll(node);
+            try {
+                Thread.sleep(1);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+        TruffleSafepoint.poll(node);
+    }
+
     @TruffleBoundary
     public static int signalFromName(PythonContext context, String name) {
         PythonModule mod = context.lookupBuiltinModule(T__SIGNAL);
@@ -218,8 +257,7 @@ public final class SignalModuleBuiltins extends PythonBuiltins {
         int signum = data.signals.getOrDefault(name, -1);
         Object handler = data.signalHandlers.get(signum);
         if (handler != null) {
-            data.signalQueue.add(new SignalTriggerAction(handler, signum));
-            data.signalSema.release();
+            data.trip(context, new SignalTriggerAction(handler, signum, data.pendingHandlers));
         }
     }
 
@@ -242,14 +280,18 @@ public final class SignalModuleBuiltins extends PythonBuiltins {
     private static class SignalTriggerAction extends AsyncHandler.AsyncPythonAction {
         private final Object callableObject;
         private final int signum;
+        private final AtomicInteger pendingHandlers;
 
-        SignalTriggerAction(Object callable, int signum) {
+        SignalTriggerAction(Object callable, int signum, AtomicInteger pendingHandlers) {
             this.callableObject = callable;
             this.signum = signum;
+            this.pendingHandlers = pendingHandlers;
         }
 
         @Override
         public Object callable() {
+            // called once, on the main thread, when the handler is about to run
+            pendingHandlers.decrementAndGet();
             return callableObject;
         }
 
@@ -399,12 +441,11 @@ public final class SignalModuleBuiltins extends PythonBuiltins {
         static Object signal(Node raisingNode, int signum, Object handler, ModuleData data) {
             CompilerAsserts.neverPartOfCompilation();
             SignalHandler oldHandler;
-            SignalTriggerAction signalTrigger = new SignalTriggerAction(handler, signum);
+            SignalTriggerAction signalTrigger = new SignalTriggerAction(handler, signum, data.pendingHandlers);
+            PythonContext context = PythonContext.get(null);
             try {
-                oldHandler = Signals.setSignalHandler(signum, () -> {
-                    data.signalQueue.add(signalTrigger);
-                    data.signalSema.release();
-                });
+                // runs on the JVM's signal dispatcher thread
+                oldHandler = Signals.setSignalHandler(signum, () -> data.trip(context, signalTrigger));
             } catch (IllegalArgumentException e) {
                 throw PRaiseNode.raiseStatic(raisingNode, PythonErrorType.ValueError, e);
             }
@@ -431,14 +472,53 @@ public final class SignalModuleBuiltins extends PythonBuiltins {
         }
     }
 
-    @Builtin(name = "set_wakeup_fd", minNumOfPositionalArgs = 1, numOfPositionalOnlyArgs = 1, parameterNames = {"fd", "warn_on_full_buffer"})
+    @Builtin(name = "set_wakeup_fd", minNumOfPositionalArgs = 2, numOfPositionalOnlyArgs = 2, parameterNames = {"$self", "fd"}, keywordOnlyNames = {"warn_on_full_buffer"}, declaresExplicitSelf = true)
+    @ArgumentClinic(name = "fd", conversion = ArgumentClinic.ClinicConversion.Int)
+    @ArgumentClinic(name = "warn_on_full_buffer", conversion = ArgumentClinic.ClinicConversion.Boolean, defaultValue = "true")
     @GenerateNodeFactory
-    abstract static class SetWakeupFdNode extends PythonBuiltinNode {
+    abstract static class SetWakeupFdNode extends PythonTernaryClinicBuiltinNode {
+        private static final TruffleString T_FD_MUST_BE_NON_BLOCKING = tsLiteral("the fd %d must be in non-blocking mode");
+
         @Specialization
-        @SuppressWarnings("unused")
-        static int doGeneric(Object fd, Object warnOnFullBuffer) {
-            // TODO: implement
-            return -1;
+        static int doInt(VirtualFrame frame, PythonModule self, int fd, boolean warnOnFullBuffer,
+                        @Bind Node inliningTarget,
+                        @Bind PythonContext context,
+                        @Cached PConstructAndRaiseNode.Lazy constructAndRaiseNode,
+                        @Cached PRaiseNode raiseNode) {
+            if (Thread.currentThread() != context.getMainThread()) {
+                throw raiseNode.raise(inliningTarget, PythonErrorType.ValueError, ErrorMessages.S, "set_wakeup_fd only works in main thread of the main interpreter");
+            }
+            if (fd != -1) {
+                try {
+                    context.getPosixSupport().fstat(fd);
+                } catch (PosixException e) {
+                    throw raiseNode.raise(inliningTarget, PythonErrorType.ValueError, ErrorMessages.S, "invalid fd");
+                }
+                boolean blocking;
+                try {
+                    blocking = context.getPosixSupport().getBlocking(fd);
+                } catch (PosixException e) {
+                    throw constructAndRaiseNode.get(inliningTarget).raiseOSErrorFromPosixException(frame, e);
+                }
+                if (blocking) {
+                    throw raiseNode.raise(inliningTarget, PythonErrorType.ValueError, T_FD_MUST_BE_NON_BLOCKING, fd);
+                }
+            }
+            return setWakeupFd(self, fd, warnOnFullBuffer);
+        }
+
+        @TruffleBoundary
+        private static int setWakeupFd(PythonModule self, int fd, boolean warnOnFullBuffer) {
+            ModuleData data = self.getModuleState(ModuleData.class);
+            int oldFd = data.wakeupFd;
+            data.wakeupFd = fd;
+            data.wakeupWarnOnFullBuffer = warnOnFullBuffer;
+            return oldFd;
+        }
+
+        @Override
+        protected ArgumentClinicProvider getArgumentClinic() {
+            return SignalModuleBuiltinsClinicProviders.SetWakeupFdNodeClinicProviderGen.INSTANCE;
         }
     }
 
@@ -472,12 +552,50 @@ public final class SignalModuleBuiltins extends PythonBuiltins {
                         @Bind PythonContext context,
                         @Bind Node inliningTarget,
                         @Cached PConstructAndRaiseNode.Lazy constructAndRaiseNode) {
+            long receivedBefore = receivedBeforeRaise(context, signum);
             try {
                 context.getPosixSupport().raise(signum);
             } catch (PosixException e) {
                 throw constructAndRaiseNode.get(inliningTarget).raiseOSErrorFromPosixException(frame, e);
             }
+            if (receivedBefore >= 0) {
+                waitForHandler(inliningTarget, context, receivedBefore);
+            }
             return PNone.NONE;
+        }
+
+        /**
+         * @return the number of signals received so far if a Python handler is installed for
+         *         {@code signum}, -1 otherwise
+         */
+        @TruffleBoundary
+        private static long receivedBeforeRaise(PythonContext context, int signum) {
+            ModuleData data = context.lookupBuiltinModule(T__SIGNAL).getModuleState(ModuleData.class);
+            return data.signalHandlers.containsKey(signum) ? data.received.get() : -1;
+        }
+
+        /**
+         * CPython runs the Python handler of a signal raised in the process before
+         * {@code raise_signal} returns. The JVM dispatches signals on a separate thread, so wait
+         * (bounded) until the signal arrived there and its handler ran at a safepoint here; the
+         * handler's exception, if any, propagates out of {@link TruffleSafepoint#poll}.
+         */
+        @TruffleBoundary
+        private static void waitForHandler(Node node, PythonContext context, long receivedBefore) {
+            ModuleData data = context.lookupBuiltinModule(T__SIGNAL).getModuleState(ModuleData.class);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (System.nanoTime() < deadline) {
+                TruffleSafepoint.poll(node);
+                if (data.received.get() > receivedBefore && data.pendingHandlers.get() == 0) {
+                    return;
+                }
+                try {
+                    Thread.sleep(1);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
         }
 
         @Override
@@ -565,8 +683,68 @@ public final class SignalModuleBuiltins extends PythonBuiltins {
         final Map<String, Integer> signals = new HashMap<>();
         final ConcurrentHashMap<Integer, Object> signalHandlers = new ConcurrentHashMap<>();
         final ConcurrentHashMap<Integer, SignalHandler> defaultSignalHandlers = new ConcurrentHashMap<>();
-        final ConcurrentLinkedDeque<SignalTriggerAction> signalQueue = new ConcurrentLinkedDeque<>();
+        final ConcurrentLinkedDeque<AsyncHandler.AsyncAction> signalQueue = new ConcurrentLinkedDeque<>();
         final Semaphore signalSema = new Semaphore(0);
+        /**
+         * The fd set with {@code signal.set_wakeup_fd}, or -1. Written from the thread that
+         * receives the signal, see {@link #trip(PythonContext, SignalTriggerAction)}.
+         */
+        volatile int wakeupFd = -1;
+        volatile boolean wakeupWarnOnFullBuffer = true;
+        /** Signals received by the Java-level handlers, see {@link RaiseSignalNode}. */
+        final AtomicLong received = new AtomicLong();
+        /** Python handlers queued but not yet run on the main thread. */
+        final AtomicInteger pendingHandlers = new AtomicInteger();
+
+        /**
+         * Queues the Python-level handler for execution as an async action and, as CPython's C
+         * signal handler does, writes the signal number to the wakeup fd. The Python handler only
+         * runs once the main thread reaches a safepoint, which does not happen while it is blocked
+         * in a native call such as {@code poll()}: the wakeup byte is what makes such a call return
+         * (asyncio relies on it to wake its event loop for SIGCHLD).
+         */
+        void trip(PythonContext context, SignalTriggerAction trigger) {
+            received.incrementAndGet();
+            pendingHandlers.incrementAndGet();
+            // The wakeup byte goes first, as in CPython's trip_signal(): a failed write is
+            // reported from the main thread before the handler runs.
+            int fd = wakeupFd;
+            if (fd != -1) {
+                int errno = context.getPosixSupport().writeSignalWakeupByte(fd, (byte) trigger.signum);
+                if (errno != 0) {
+                    boolean fullBuffer = errno == OSErrorEnum.EAGAIN.getNumber() || errno == OSErrorEnum.EWOULDBLOCK.getNumber();
+                    if (!fullBuffer || wakeupWarnOnFullBuffer) {
+                        signalQueue.add(new WakeupWriteErrorAction(errno));
+                        signalSema.release();
+                    }
+                }
+            }
+            signalQueue.add(trigger);
+            signalSema.release();
+        }
+    }
+
+    /**
+     * Reports a failed write to the wakeup fd through {@code sys.unraisablehook}, from the main
+     * thread (the error cannot be raised in the thread that received the signal).
+     */
+    private static final class WakeupWriteErrorAction implements AsyncHandler.AsyncAction {
+        private static final TruffleString T_WAKEUP_WRITE_ERROR = tsLiteral("Exception ignored when trying to write to the signal wakeup fd");
+        private final int errno;
+
+        WakeupWriteErrorAction(int errno) {
+            this.errno = errno;
+        }
+
+        @Override
+        public void execute(PythonContext context, ThreadLocalAction.Access access) {
+            try {
+                TruffleString message = context.getPosixSupport().strerror(errno);
+                throw PConstructAndRaiseNode.getUncached().raiseOSError(null, errno, message, PNone.NONE);
+            } catch (PException e) {
+                WriteUnraisableNode.getUncached().execute(e.getUnreifiedException(), T_WAKEUP_WRITE_ERROR, PNone.NONE);
+            }
+        }
     }
 
 }

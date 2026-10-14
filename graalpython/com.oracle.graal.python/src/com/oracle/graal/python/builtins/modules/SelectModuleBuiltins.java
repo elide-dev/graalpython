@@ -168,6 +168,8 @@ public final class SelectModuleBuiltins extends PythonBuiltins {
                     } finally {
                         gil.acquire();
                     }
+                    // a signal (e.g. one whose wakeup byte woke us) may have a handler pending
+                    SignalModuleBuiltins.runPendingSignalHandlers(inliningTarget, PythonContext.get(inliningTarget));
                     break;
                 } catch (ChannelNotSelectableException e) {
                     // GraalPython hack: if one of the channels is not selectable (can happen only

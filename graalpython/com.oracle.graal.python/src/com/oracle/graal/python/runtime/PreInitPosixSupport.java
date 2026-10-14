@@ -192,6 +192,13 @@ public final class PreInitPosixSupport extends PosixSupport {
 
     @Override
     @TruffleBoundary
+    public int writeSignalWakeupByte(int fd, byte value) {
+        checkNotInPreInitialization();
+        return nativePosixSupport.writeSignalWakeupByte(fd, value);
+    }
+
+    @Override
+    @TruffleBoundary
     public final long write(int fd, Buffer data) throws PosixException {
         checkNotInPreInitialization();
         return nativePosixSupport.write(fd, data);

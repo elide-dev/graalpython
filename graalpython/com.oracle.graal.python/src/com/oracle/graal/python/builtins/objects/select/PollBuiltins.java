@@ -54,6 +54,7 @@ import com.oracle.graal.python.annotations.Builtin;
 import com.oracle.graal.python.builtins.CoreFunctions;
 import com.oracle.graal.python.builtins.PythonBuiltinClassType;
 import com.oracle.graal.python.builtins.PythonBuiltins;
+import com.oracle.graal.python.builtins.modules.SignalModuleBuiltins;
 import com.oracle.graal.python.builtins.objects.PNone;
 import com.oracle.graal.python.builtins.objects.exception.OSErrorEnum;
 import com.oracle.graal.python.builtins.objects.list.PList;
@@ -194,6 +195,8 @@ public final class PollBuiltins extends PythonBuiltins {
                         } finally {
                             gil.acquire();
                         }
+                        // a signal (e.g. one whose wakeup byte woke us) may have a handler pending
+                        SignalModuleBuiltins.runPendingSignalHandlers(inliningTarget, PythonContext.get(inliningTarget));
                         break;
                     } catch (PosixException e) {
                         if (!e.hasErrno(OSErrorEnum.EINTR)) {

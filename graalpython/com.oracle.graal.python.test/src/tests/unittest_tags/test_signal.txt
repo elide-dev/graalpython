@@ -14,5 +14,15 @@ test.test_signal.RaiseSignalTest.test_handler @ darwin-arm64,linux-aarch64,linux
 test.test_signal.SiginterruptTest.test_siginterrupt_off @ darwin-arm64,linux-aarch64,linux-aarch64-github,linux-x86_64,linux-x86_64-github
 # Timeout
 !test.test_signal.StressTest.test_stress_modifying_handlers
+test.test_signal.WakeupFDTests.test_invalid_call @ linux-aarch64,linux-aarch64-github,linux-x86_64,linux-x86_64-github
+test.test_signal.WakeupFDTests.test_invalid_fd @ linux-aarch64,linux-aarch64-github,linux-x86_64,linux-x86_64-github
+test.test_signal.WakeupFDTests.test_invalid_socket @ linux-aarch64,linux-aarch64-github,linux-x86_64,linux-x86_64-github
+test.test_signal.WakeupFDTests.test_set_wakeup_fd_blocking @ linux-aarch64,linux-aarch64-github,linux-x86_64,linux-x86_64-github
+test.test_signal.WakeupFDTests.test_set_wakeup_fd_result @ linux-aarch64,linux-aarch64-github,linux-x86_64,linux-x86_64-github
+test.test_signal.WakeupFDTests.test_set_wakeup_fd_socket_result @ linux-aarch64,linux-aarch64-github,linux-x86_64,linux-x86_64-github
+test.test_signal.WakeupSignalTests.test_signum @ linux-aarch64,linux-aarch64-github,linux-x86_64,linux-x86_64-github
+test.test_signal.WakeupSignalTests.test_wakeup_fd_during @ linux-aarch64,linux-aarch64-github,linux-x86_64,linux-x86_64-github
+test.test_signal.WakeupSignalTests.test_wakeup_fd_early @ linux-aarch64,linux-aarch64-github,linux-x86_64,linux-x86_64-github
+test.test_signal.WakeupSignalTests.test_wakeup_write_error @ linux-aarch64,linux-aarch64-github,linux-x86_64,linux-x86_64-github
 test.test_signal.WindowsSignalTests.test_issue9324 @ win32-AMD64,win32-AMD64-github
 test.test_signal.WindowsSignalTests.test_valid_signals @ win32-AMD64,win32-AMD64-github
