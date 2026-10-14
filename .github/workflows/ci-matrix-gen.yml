@@ -222,7 +222,8 @@ jobs:
               Expand-Archive -Path $zip -DestinationPath $mavenDir
               $mavenBin = Join-Path $mavenDir "apache-maven-$mavenVersion\bin"
               $mavenBin | Out-File -FilePath $env:GITHUB_PATH -Append
-              & (Join-Path $mavenBin 'mvn.cmd') --batch-mode --version
+              # Not verified with `mvn --version` here: the JDK is only fetched in a later step.
+              Write-Host "Installed Maven $mavenVersion to $mavenBin"
             } elseif (Get-Command $pkg -ErrorAction SilentlyContinue) {
               Write-Host "$pkg is already available: $((Get-Command $pkg).Source)"
             } else {
