@@ -1480,8 +1480,23 @@ public final class PythonContext extends Python3Core {
         isInitialized = true;
     }
 
+    /**
+     * Runtime information of a pre-initialized context that was captured at image build time and
+     * must be taken from the run-time environment instead. The native compression supports are
+     * created without native access during pre-initialization (their native functions are
+     * {@code null}), so unless they are re-created here, {@code bz2}, {@code zlib} and {@code lzma}
+     * fail with a {@link NullPointerException} in native standalones.
+     */
     private void patchRuntimeInformation() {
         initializeHashSecret();
+        initializeLocale();
+        currentZoneId = env.getTimeZone();
+        setIntMaxStrDigits(getOption(PythonOptions.IntMaxStrDigits));
+        if (!PythonImageBuildOptions.WITHOUT_COMPRESSION_LIBRARIES) {
+            nativeZlib = NativeZlibSupport.createNative(this, "");
+            nativeBz2lib = NativeBz2Support.createNative(this, "");
+            nativeLZMA = NativeLZMASupport.createNative(this, "");
+        }
         patchPackagePaths(T_STD_LIB_PLACEHOLDER, getStdlibHome());
         repairFrozenPackagePaths();
         isInitialized = true;
