@@ -1458,6 +1458,9 @@ public final class PythonContext extends Python3Core {
             patchRuntimeInformation();
             return;
         }
+        if (!env.isPreInitialization()) {
+            initializeHashSecret();
+        }
         initializeLocale();
         currentZoneId = env.getTimeZone();
         setIntMaxStrDigits(getOption(PythonOptions.IntMaxStrDigits));
