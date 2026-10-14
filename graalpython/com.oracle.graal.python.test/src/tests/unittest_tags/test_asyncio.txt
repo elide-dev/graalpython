@@ -190,13 +190,14 @@ test.test_asyncio.test_events.PollEventLoopTests.test_run_until_complete @ darwi
 test.test_asyncio.test_events.PollEventLoopTests.test_run_until_complete_stopped @ darwin-arm64,linux-aarch64,linux-aarch64-github,linux-x86_64,linux-x86_64-github
 test.test_asyncio.test_events.PollEventLoopTests.test_server_close @ darwin-arm64,linux-aarch64,linux-aarch64-github,linux-x86_64,linux-x86_64-github
 test.test_asyncio.test_events.PollEventLoopTests.test_ssl_connect_accepted_socket @ darwin-arm64,linux-aarch64,linux-aarch64-github,linux-x86_64,linux-x86_64-github
-test.test_asyncio.test_events.PollEventLoopTests.test_subprocess_close_after_finish @ linux-aarch64-github,linux-x86_64-github
+# test_subprocess_close_after_finish and test_subprocess_wait_no_same_group hang (600s timeout)
+# on the linux-aarch64 GitHub runners; the former also fails in upstream GitHub Actions runs.
+test.test_asyncio.test_events.PollEventLoopTests.test_subprocess_close_after_finish @ linux-x86_64-github
 test.test_asyncio.test_events.PollEventLoopTests.test_subprocess_exec_invalid_args @ darwin-arm64,linux-aarch64,linux-aarch64-github,linux-x86_64,linux-x86_64-github
 # GR-80225
 !test.test_asyncio.test_events.PollEventLoopTests.test_subprocess_exitcode @ darwin-arm64,linux-aarch64-github
 !test.test_asyncio.test_events.PollEventLoopTests.test_subprocess_shell @ linux-aarch64-github,linux-x86_64
 test.test_asyncio.test_events.PollEventLoopTests.test_subprocess_shell_invalid_args @ darwin-arm64,linux-aarch64,linux-aarch64-github,linux-x86_64,linux-x86_64-github
-test.test_asyncio.test_events.PollEventLoopTests.test_subprocess_wait_no_same_group @ linux-aarch64-github
 test.test_asyncio.test_events.PollEventLoopTests.test_timeout_rounding @ darwin-arm64,linux-aarch64,linux-aarch64-github,linux-x86_64,linux-x86_64-github
 test.test_asyncio.test_events.PollEventLoopTests.test_unclosed_pipe_transport @ darwin-arm64,linux-aarch64,linux-aarch64-github,linux-x86_64,linux-x86_64-github
 test.test_asyncio.test_events.PollEventLoopTests.test_write_pipe @ darwin-arm64,linux-aarch64,linux-aarch64-github,linux-x86_64,linux-x86_64-github
