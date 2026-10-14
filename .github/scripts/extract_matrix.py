@@ -98,8 +98,9 @@ PYTHON_VERSIONS = {
     LINUX_AMD64_RUNNER: "3.12.8",
     "style-gate": "3.8.12",
     "style-ecj-gate": "3.8.12",
-    # The Maven JUnit gate builds a delvewheel venv, which needs CPython >= 3.12 (or an
+    # The JUnit gates build a delvewheel venv, which needs CPython >= 3.12 (or an
     # Oracle-internal ARTIFACT_DOWNLOAD_SCRIPT); ci.jsonnet's 3.8 fails there upstream as well.
+    "python-junit-gate-windows": "3.12.8",
     "python-junit-maven-gate-windows": "3.12.8",
 }
 
