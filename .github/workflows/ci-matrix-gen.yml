@@ -200,12 +200,33 @@ jobs:
         if: ${{ runner.os == 'Windows' && matrix.system_packages }}
         run: |
           $packages = '${{ matrix.system_packages }}' -split ' '
+          # The self-hosted Windows runners have no Chocolatey (and no preinstalled Maven, unlike
+          # GitHub's images), so Maven is downloaded directly when choco is missing; cmake is
+          # already on their PATH.
+          $haveChoco = [bool](Get-Command choco -ErrorAction SilentlyContinue)
           foreach ($pkg in $packages) {
-            try {
-                choco install $pkg -y
-            } catch {
-                Write-Host "Failed to install $pkg, skipping."
-                Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Yellow
+            if ($haveChoco) {
+              try {
+                  choco install $pkg -y
+              } catch {
+                  Write-Host "Failed to install $pkg, skipping."
+                  Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Yellow
+              }
+            } elseif ($pkg -eq 'maven' -and -not (Get-Command mvn -ErrorAction SilentlyContinue)) {
+              $mavenVersion = '3.9.9'
+              $mavenDir = Join-Path $env:RUNNER_TEMP 'maven'
+              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $mavenDir
+              New-Item -ItemType Directory -Force $mavenDir | Out-Null
+              $zip = Join-Path $mavenDir "apache-maven-$mavenVersion-bin.zip"
+              Invoke-WebRequest -Uri "https://archive.apache.org/dist/maven/maven-3/$mavenVersion/binaries/apache-maven-$mavenVersion-bin.zip" -OutFile $zip
+              Expand-Archive -Path $zip -DestinationPath $mavenDir
+              $mavenBin = Join-Path $mavenDir "apache-maven-$mavenVersion\bin"
+              $mavenBin | Out-File -FilePath $env:GITHUB_PATH -Append
+              & (Join-Path $mavenBin 'mvn.cmd') --batch-mode --version
+            } elseif (Get-Command $pkg -ErrorAction SilentlyContinue) {
+              Write-Host "$pkg is already available: $((Get-Command $pkg).Source)"
+            } else {
+              Write-Host "No choco on this runner and no fallback for $pkg, skipping." -ForegroundColor Yellow
             }
           }
 
