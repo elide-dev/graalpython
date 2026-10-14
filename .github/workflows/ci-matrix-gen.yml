@@ -188,6 +188,19 @@ jobs:
           for pkg in ${{ matrix.system_packages }}; do
               sudo apt-get -qq install "$pkg" || true
           done
+          # apt failures are tolerated above, and on a self-hosted runner whose dpkg state is
+          # broken the maven package can be unpacked but unconfigured (no /usr/bin/mvn), so
+          # fall back to a direct Maven download when the job needs it and mvn is missing.
+          case " ${{ matrix.system_packages }} " in *"'maven'"*)
+            if ! command -v mvn >/dev/null; then
+              maven_version=3.9.9
+              maven_dir="$RUNNER_TEMP/maven"
+              rm -rf "$maven_dir" && mkdir -p "$maven_dir"
+              curl -fsSL "https://archive.apache.org/dist/maven/maven-3/$maven_version/binaries/apache-maven-$maven_version-bin.tar.gz" | tar -xz -C "$maven_dir"
+              echo "$maven_dir/apache-maven-$maven_version/bin" >> "$GITHUB_PATH"
+              echo "Installed Maven $maven_version to $maven_dir (mvn was not on the PATH after apt-get)"
+            fi
+          ;; esac
       - name: Install system packages on macOS
         if: ${{ runner.os == 'macOS' && matrix.system_packages }}
         run: |
