@@ -3948,4 +3948,16 @@ public final class NativePosixSupport extends PosixSupport {
     private int getErrno() {
         return posixNativeFunctionInvoker.get_errno();
     }
+
+    @Override
+    @TruffleBoundary
+    public int writeSignalWakeupByte(int fd, byte value) {
+        long nativeBuffer = NativeMemory.mallocByteArrayOrNull(1);
+        try {
+            NativeMemory.writeByteArrayElements(nativeBuffer, 0, new byte[]{value}, 0, 1);
+            return posixNativeFunctionInvoker.call_write(fd, nativeBuffer, 1) < 0 ? getErrno() : 0;
+        } finally {
+            NativeMemory.free(nativeBuffer);
+        }
+    }
 }

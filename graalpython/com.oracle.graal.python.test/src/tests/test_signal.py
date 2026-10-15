@@ -183,3 +183,77 @@ def test_interrupt():
     assert proc.wait() != 0
     assert b'KeyboardInterrupt' in stderr, f"Unexpected stderr: {stderr}"
     assert b'Traceback' in stderr, f"Unexpected stderr: {stderr}"
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "needs POSIX signals and select.poll")
+class WakeupFdTests(unittest.TestCase):
+    """signal.set_wakeup_fd must wake a native poll() that would otherwise never return.
+
+    asyncio relies on this for SIGCHLD: with no pipes to a subprocess, the only
+    thing that can wake the event loop is the byte the signal handler writes to
+    the wakeup fd. Without it, the Python-level handler only runs when the main
+    thread leaves poll(), which only happens if the kernel delivers the signal
+    to that very thread.
+    """
+
+    def setUp(self):
+        import os
+        self.r, self.w = os.pipe()
+        os.set_blocking(self.w, False)
+        self.old_fd = signal.set_wakeup_fd(self.w)
+        self.old_handler = signal.signal(signal.SIGALRM, lambda *args: None)
+
+    def tearDown(self):
+        import os
+        signal.signal(signal.SIGALRM, self.old_handler)
+        signal.set_wakeup_fd(self.old_fd)
+        os.close(self.r)
+        os.close(self.w)
+
+    def test_set_wakeup_fd_result_and_validation(self):
+        import os
+        self.assertEqual(signal.set_wakeup_fd(self.w), self.w)
+        with self.assertRaisesRegex(ValueError, "invalid fd"):
+            signal.set_wakeup_fd(10 ** 6)
+        r, w = os.pipe()
+        try:
+            with self.assertRaisesRegex(ValueError, "non-blocking"):
+                signal.set_wakeup_fd(w)
+        finally:
+            os.close(r)
+            os.close(w)
+        self.assertEqual(signal.set_wakeup_fd(self.w), self.w)
+
+    def test_wakeup_byte_wakes_blocking_poll(self):
+        import os
+        import select
+        poller = select.poll()
+        poller.register(self.r, select.POLLIN)
+        # Delivered asynchronously while the main thread is blocked in poll()
+        # with no timeout; the poll returns only if the wakeup byte is written.
+        signal.setitimer(signal.ITIMER_REAL, 0.2)
+        try:
+            events = poller.poll()
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        self.assertEqual([(self.r, select.POLLIN)], events)
+        self.assertEqual(bytes([signal.SIGALRM]), os.read(self.r, 1))
+
+    def test_handler_runs_after_wakeup(self):
+        import select
+        import time
+        seen = []
+        signal.signal(signal.SIGALRM, lambda signum, frame: seen.append(signum))
+        poller = select.poll()
+        poller.register(self.r, select.POLLIN)
+        signal.setitimer(signal.ITIMER_REAL, 0.2)
+        try:
+            poller.poll()
+            # the handler runs once the main thread reaches a safepoint
+            for _ in range(100):
+                if seen:
+                    break
+                time.sleep(0.01)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        self.assertEqual([signal.SIGALRM], seen)

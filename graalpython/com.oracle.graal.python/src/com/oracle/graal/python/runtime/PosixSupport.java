@@ -661,6 +661,26 @@ public abstract class PosixSupport {
         // nop
     }
 
+    /**
+     * Writes a single byte to {@code fd} for {@code signal.set_wakeup_fd}. Unlike
+     * {@link #write(int, Buffer)}, this is safe to call from a thread that has not entered the
+     * context (the JVM's signal dispatcher thread): it does not create Python-level exceptions or
+     * {@link com.oracle.truffle.api.strings.TruffleString}s from native memory.
+     *
+     * @return 0 on success, the errno otherwise
+     */
+    @TruffleBoundary
+    public int writeSignalWakeupByte(int fd, byte value) {
+        try {
+            write(fd, Buffer.wrap(new byte[]{value}));
+            return 0;
+        } catch (PosixErrnoException e) {
+            return e.getErrorCode();
+        } catch (PosixException e) {
+            return OSErrorEnum.EIO.getNumber();
+        }
+    }
+
     public static PosixSupport get(Node node) {
         return PythonContext.get(node).getPosixSupport();
     }

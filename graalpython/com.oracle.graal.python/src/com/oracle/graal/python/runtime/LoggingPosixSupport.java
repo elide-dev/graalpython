@@ -185,6 +185,12 @@ public class LoggingPosixSupport extends PosixSupport {
 
     @Override
     @TruffleBoundary
+    public int writeSignalWakeupByte(int fd, byte value) {
+        return delegate.writeSignalWakeupByte(fd, value);
+    }
+
+    @Override
+    @TruffleBoundary
     public final long write(int fd, Buffer data) throws PosixException {
         logEnter("write", "%d, %d", fd, data.length);
         try {
