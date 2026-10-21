@@ -47,6 +47,7 @@ import static com.oracle.graal.python.nodes.ErrorMessages.S_CONSTRUCTOR_TAKES_AT
 import static com.oracle.graal.python.nodes.SpecialAttributeNames.J___DICT__;
 import static com.oracle.graal.python.nodes.SpecialAttributeNames.T___DICT__;
 import static com.oracle.graal.python.nodes.SpecialMethodNames.J___REDUCE__;
+import static com.oracle.graal.python.runtime.exception.PythonErrorType.AttributeError;
 import static com.oracle.graal.python.runtime.exception.PythonErrorType.TypeError;
 import static com.oracle.graal.python.util.PythonUtils.EMPTY_OBJECT_ARRAY;
 import static com.oracle.graal.python.util.PythonUtils.TS_ENCODING;
@@ -66,6 +67,7 @@ import com.oracle.graal.python.builtins.objects.common.SequenceNodes;
 import com.oracle.graal.python.builtins.objects.dict.PDict;
 import com.oracle.graal.python.builtins.objects.function.PKeyword;
 import com.oracle.graal.python.builtins.objects.object.PythonObject;
+import com.oracle.graal.python.builtins.objects.type.PythonBuiltinClass;
 import com.oracle.graal.python.builtins.objects.type.TpSlots;
 import com.oracle.graal.python.builtins.objects.type.TypeNodes;
 import com.oracle.graal.python.lib.PyObjectLookupAttr;
@@ -125,15 +127,21 @@ public final class AstBuiltins extends PythonBuiltins {
         @Specialization
         protected Object doIt(VirtualFrame frame, Object self, Object[] args, PKeyword[] kwArgs,
                         @Bind Node inliningTarget,
+                        @Cached GetClassNode getClassNode,
                         @Cached PyObjectLookupAttr lookupAttrNode,
                         @Cached SequenceNodes.GetObjectArrayNode getObjectArrayNode,
                         @Cached PyObjectSetAttrO setAttrNode,
                         @Cached TruffleString.EqualNode equalNode,
+                        @Cached TypeNodes.GetNameNode getTypeNameNode,
                         @Cached PRaiseNode raiseNode) {
-            Object fieldsObj = lookupAttrNode.execute(frame, inliningTarget, self, T__FIELDS);
+            Object selfType = getClassNode.execute(inliningTarget, self);
+            Object fieldsObj = lookupAttrNode.execute(frame, inliningTarget, selfType, T__FIELDS);
             Object[] fields;
             if (fieldsObj == PNone.NO_VALUE) {
-                fields = EMPTY_OBJECT_ARRAY;
+                PythonBuiltinClassType builtinSelfType = selfType instanceof PythonBuiltinClassType pbct ? pbct
+                                : selfType instanceof PythonBuiltinClass pbc ? pbc.getType() : null;
+                TruffleString typeName = builtinSelfType != null ? builtinSelfType.getPrintName() : getTypeNameNode.execute(inliningTarget, selfType);
+                throw raiseNode.raise(inliningTarget, AttributeError, ErrorMessages.TYPE_S_HAS_NO_ATTR, typeName, T__FIELDS);
             } else {
                 if (!(fieldsObj instanceof PSequence)) {
                     throw raiseNode.raise(inliningTarget, TypeError, IS_NOT_A_SEQUENCE, fieldsObj);
