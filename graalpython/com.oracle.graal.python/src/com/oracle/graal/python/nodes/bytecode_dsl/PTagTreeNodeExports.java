@@ -58,6 +58,8 @@ final class PTagTreeNodeExports {
     @ExportMessage
     @SuppressWarnings("unused")
     static Object getScope(TagTreeNode node, Frame frame, boolean nodeEnter) {
+        // Python function bindings are lexical across the entire function: nodeEnter does not
+        // affect membership. With a live frame, PythonLocalScope checks the current slot values.
         return PythonScopes.create(node, frame != null ? frame.materialize() : null);
     }
 }
