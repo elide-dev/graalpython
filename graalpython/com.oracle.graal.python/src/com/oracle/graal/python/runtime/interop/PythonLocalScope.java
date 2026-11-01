@@ -105,6 +105,10 @@ public abstract class PythonLocalScope implements TruffleObject {
     }
 
     public static PythonLocalScope createEmpty(RootNode root) {
+        PBytecodeDSLRootNode dslRoot = PBytecodeDSLRootNode.cast(root);
+        if (dslRoot != null) {
+            return BytecodeFrameLocalScope.create(dslRoot, (BytecodeFrame) null);
+        }
         return FrameLocalScope.create(root, null);
     }
 
@@ -153,7 +157,7 @@ public abstract class PythonLocalScope implements TruffleObject {
     @ExportMessage
     @TruffleBoundary
     boolean isMemberReadable(String member) {
-        return slots.containsKey(member);
+        return slots.containsKey(member) && hasFrame();
     }
 
     @ExportMessage
@@ -271,21 +275,22 @@ public abstract class PythonLocalScope implements TruffleObject {
         @TruffleBoundary
         private static BytecodeFrameLocalScope create(PBytecodeDSLRootNode root, BytecodeFrame bytecodeFrame) {
             LinkedHashMap<String, Integer> slotsMap = new LinkedHashMap<>();
-            if (bytecodeFrame != null) {
-                BytecodeDSLCodeUnit codeUnit = root.getCodeUnit();
-                int varIndex = 0;
-                varIndex = addSlots(varIndex, codeUnit.varnames, bytecodeFrame, slotsMap);
-                varIndex = addSlots(varIndex, codeUnit.cellvars, bytecodeFrame, slotsMap);
-                addSlots(varIndex, codeUnit.freevars, bytecodeFrame, slotsMap);
-            }
+            BytecodeDSLCodeUnit codeUnit = root.getCodeUnit();
+            int varIndex = 0;
+            varIndex = addSlots(varIndex, codeUnit.varnames, bytecodeFrame, slotsMap);
+            varIndex = addSlots(varIndex, codeUnit.cellvars, bytecodeFrame, slotsMap);
+            addSlots(varIndex, codeUnit.freevars, bytecodeFrame, slotsMap);
             return new BytecodeFrameLocalScope(root, slotsMap, bytecodeFrame);
         }
 
         private static int addSlots(int startIndex, TruffleString[] names, BytecodeFrame frame, LinkedHashMap<String, Integer> slots) {
             int varIndex = startIndex;
             for (TruffleString name : names) {
-                if (frame.getLocalValue(varIndex) != null) {
-                    slots.put(name.toJavaStringUncached(), varIndex);
+                String variableName = name.toJavaStringUncached();
+                // Lexical bindings exist throughout the function, even before assignment. Compiler
+                // temporaries such as the implicit comprehension argument .0 are not source names.
+                if (frame == null ? !variableName.startsWith(".") : frame.getLocalValue(varIndex) != null) {
+                    slots.put(variableName, varIndex);
                 }
                 varIndex++;
             }
