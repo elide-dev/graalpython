@@ -40,7 +40,7 @@ suite = {
                 "versionFrom": "regex",
                 "subdir": True,
                 "urls": [
-                    {"url": "https://github.com/oracle/graal", "kind": "git"},
+                    {"url": "https://github.com/elide-dev/graal", "kind": "git"},
                 ]
             },
             {
@@ -48,23 +48,23 @@ suite = {
                 "versionFrom": "truffle",
                 "subdir": True,
                 "urls": [
-                    {"url": "https://github.com/oracle/graal", "kind": "git"},
+                    {"url": "https://github.com/elide-dev/graal", "kind": "git"},
                 ]
             },
             {
                 "name": "tools",
-                "version": "5727d2bee28565f4d4db22770df1276de23d054e",
+                "version": "fe7f970d99b666853ebe7abd14f14328aec29118",
                 "subdir": True,
                 "urls": [
-                    {"url": "https://github.com/oracle/graal", "kind": "git"},
+                    {"url": "https://github.com/elide-dev/graal", "kind": "git"},
                 ],
             },
             {
                 "name": "regex",
-                "version": "5727d2bee28565f4d4db22770df1276de23d054e",
+                "version": "fe7f970d99b666853ebe7abd14f14328aec29118",
                 "subdir": True,
                 "urls": [
-                    {"url": "https://github.com/oracle/graal", "kind": "git"},
+                    {"url": "https://github.com/elide-dev/graal", "kind": "git"},
                 ]
             },
         ],

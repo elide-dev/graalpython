@@ -75,11 +75,14 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.BiConsumer;
@@ -104,6 +107,7 @@ import com.oracle.graal.python.compiler.bytecode_dsl.BytecodeDSLCompiler.Bytecod
 import com.oracle.graal.python.lib.PyObjectRichCompareBool;
 import com.oracle.graal.python.nodes.StringLiterals;
 import com.oracle.graal.python.nodes.bytecode_dsl.BytecodeDSLCodeUnit;
+import com.oracle.graal.python.nodes.bytecode_dsl.BytecodeDSLCodeUnit.VariableAccess;
 import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode;
 import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNodeGen;
 import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNodeGen.Builder;
@@ -160,6 +164,8 @@ import com.oracle.truffle.api.bytecode.StackValue;
 import com.oracle.truffle.api.bytecode.serialization.BytecodeSerializer;
 import com.oracle.truffle.api.debug.DebuggerTags;
 import com.oracle.truffle.api.instrumentation.StandardTags.StatementTag;
+import com.oracle.truffle.api.instrumentation.StandardTags.ReadVariableTag;
+import com.oracle.truffle.api.instrumentation.StandardTags.WriteVariableTag;
 import com.oracle.truffle.api.strings.TruffleString;
 
 /**
@@ -211,6 +217,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
     private String qualName;
 
     // Immutable after construction
+    private final LinkedHashSet<VariableAccess> variableAccesses = new LinkedHashSet<>();
     private final HashMap<String, Integer> varnames;
     private final HashMap<String, Integer> cellvars;
     private final HashMap<String, Integer> freevars;
@@ -251,6 +258,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
     private BytecodeLocal generatorExceptionStateLocal;
 
     // Mutable (must be reset)
+    private final Deque<SourceRange> statementLocations = new ArrayDeque<>();
     private SourceRange currentLocation;
     BytecodeLocal yieldFromGenerator;
     private int lastTracedLine;
@@ -587,6 +595,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
                             yieldFromGenerator != null ? yieldFromGenerator.getLocalIndex() : -1,
                             instrumentationDataLocal.getLocalIndex(),
                             maxProfileCEventStackSize,
+                            List.copyOf(variableAccesses),
                             new BytecodeSupplier(nodes));
             ctx.codeUnits.put(key, codeUnit);
         }
@@ -759,6 +768,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
     }
 
     public void reset() {
+        statementLocations.clear();
         currentLocation = null;
         currentSaveExceptionLocal = null;
         prevSaveExceptionLocal = null;
@@ -972,6 +982,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
     }
 
     void beginStatement(SourceRange sourceRange, Builder b) {
+        statementLocations.push(sourceRange);
         beginSourceSection(sourceRange, b);
         b.beginTag(StatementTag.class);
         b.beginBlock();
@@ -981,6 +992,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
         b.endBlock();
         b.endTag(StatementTag.class);
         endSourceSection(b);
+        statementLocations.pop();
     }
 
     void beginReturn(Builder b) {
@@ -1408,9 +1420,11 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
             } else {
                 b.emitClearTraceLine();
             }
+            boolean tagged = beginDirectVariableWrite(comp.target, localValue, b);
             b.beginForIterate(localValue);
             b.emitLoadStackValue(iter);
             b.endForIterate();
+            endDirectVariableWrite(tagged, b);
             b.endBlock();
 
             b.beginBlock();
@@ -1877,6 +1891,77 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
             }
         }
         return null;
+    }
+
+    private SourceRange variableSourceRange(SSTNode node) {
+        if (!ctx.source.hasCharacters()) {
+            return SourceRange.ARTIFICIAL_RANGE;
+        }
+        return variableSourceRange(node.getSourceRange());
+    }
+
+    private SourceRange variableSourceRange(SourceRange range) {
+        try {
+            // Parser columns count Unicode code points; Truffle source columns count UTF-16 units.
+            int start = Character.offsetByCodePoints(ctx.source.getCharacters(range.startLine), 0, range.startColumn);
+            int end = Character.offsetByCodePoints(ctx.source.getCharacters(range.endLine), 0, range.endColumn);
+            return new SourceRange(range.startLine, start, range.endLine, end);
+        } catch (IllegalArgumentException | IndexOutOfBoundsException e) {
+            return SourceRange.ARTIFICIAL_RANGE;
+        }
+    }
+
+    private boolean recordVariableAccess(ExprTy.Name node, boolean write) {
+        SourceRange range = variableSourceRange(node);
+        if (node.id.startsWith(".") || range == SourceRange.ARTIFICIAL_RANGE || range.startLine < 1 || range.startColumn < 0 ||
+                        range.endLine < range.startLine || range.endColumn < 1 || !ctx.source.hasCharacters()) {
+            return false;
+        }
+        try {
+            ctx.source.createSection(range.startLine, range.startColumn + 1, range.endLine, range.endColumn);
+        } catch (IllegalArgumentException e) {
+            // AST-created code and incomplete source ranges need not identify a source token.
+            return false;
+        }
+        variableAccesses.add(new VariableAccess(maybeMangle(node.id), range.startLine, range.startColumn, range.endLine, range.endColumn, write));
+        return true;
+    }
+
+    private boolean beginVariableAccess(ExprTy.Name node, boolean write, Builder b) {
+        if (!recordVariableAccess(node, write)) {
+            return false;
+        }
+        beginVariableTag(variableSourceRange(node), write, b);
+        return true;
+    }
+
+    private boolean beginDirectVariableWrite(ExprTy target, BytecodeLocal local, Builder b) {
+        if (!isTemporaryLocal(local) && target instanceof ExprTy.Name name && recordVariableAccess(name, true)) {
+            beginVariableTag(variableSourceRange(target), true, b);
+            return true;
+        }
+        return false;
+    }
+
+    private void beginVariableTag(SourceRange accessRange, boolean write, Builder b) {
+        beginSourceSection(accessRange, b);
+        // Bytecode DSL stack walks select the innermost tag. Keep its program location at the
+        // statement (or expression root), while the outer source layer identifies the access.
+        SourceRange statement = statementLocations.peek();
+        beginSourceSection(variableSourceRange(statement != null ? statement : getRootSourceRange(startNode)), b);
+        b.beginTag(write ? WriteVariableTag.class : ReadVariableTag.class);
+    }
+
+    private void endVariableTag(boolean write, Builder b) {
+        b.endTag(write ? WriteVariableTag.class : ReadVariableTag.class);
+        endSourceSection(b);
+        endSourceSection(b);
+    }
+
+    private void endDirectVariableWrite(boolean tagged, Builder b) {
+        if (tagged) {
+            endVariableTag(true, b);
+        }
     }
 
     private void emitReadLocal(String name, Builder b) {
@@ -3097,7 +3182,11 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
         public Void visit(ExprTy.Name node) {
             beginSourceSection(node, b);
             beginTraceLineChecked(b);
+            boolean tagged = beginVariableAccess(node, false, b);
             emitReadLocal(node.id, b);
+            if (tagged) {
+                endVariableTag(false, b);
+            }
             endTraceLineChecked(node, b);
             endSourceSection(b);
             return null;
@@ -3724,9 +3813,13 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
             public Void visit(ExprTy.Name node) {
                 beginSourceSection(node, b);
                 emitTraceLineChecked(node, b);
+                boolean tagged = beginVariableAccess(node, true, b);
                 beginStoreLocal(node.id, b);
                 generateValue.run();
                 endStoreLocal(node.id, b);
+                if (tagged) {
+                    endVariableTag(true, b);
+                }
                 endSourceSection(b);
                 return null;
             }
@@ -3773,9 +3866,22 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
                 if (nodes.length == 2 && containsNoStarred(nodes)) {
                     BytecodeLocal target1 = allowFastLocalLookup ? beginTemporaryLocalOrGetLocal(nodes[0], b) : beginTemporaryLocal();
                     BytecodeLocal target2 = allowFastLocalLookup ? beginTemporaryLocalOrGetLocal(nodes[1], b) : beginTemporaryLocal();
+                    boolean tagged = false;
+                    if (!isTemporaryLocal(target1)) {
+                        tagged |= recordVariableAccess((ExprTy.Name) nodes[0], true);
+                    }
+                    if (!isTemporaryLocal(target2)) {
+                        tagged |= recordVariableAccess((ExprTy.Name) nodes[1], true);
+                    }
+                    if (tagged) {
+                        beginVariableTag(variableSourceRange(nodes[0]).withEnd(variableSourceRange(nodes[1])), true, b);
+                    }
                     b.beginUnpackToLocals2(target1, target2);
                     generateValue.run();
                     b.endUnpackToLocals2();
+                    if (tagged) {
+                        endVariableTag(true, b);
+                    }
                     storeTemporaryLocalToTarget(target1, nodes[0], b, allowFastLocalLookup);
                     storeTemporaryLocalToTarget(target2, nodes[1], b, allowFastLocalLookup);
                     endTemporaryLocal(target1);
@@ -3930,12 +4036,23 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
                 beginSourceSection(node, b);
                 emitTraceLineChecked(node, b);
 
+                boolean tagged = beginVariableAccess(node, true, b);
                 beginStoreLocal(node.id, b);
                 beginAugAssign();
+                if (tagged) {
+                    recordVariableAccess(node, false);
+                    b.beginTag(ReadVariableTag.class);
+                }
                 emitReadLocal(node.id, b);
+                if (tagged) {
+                    b.endTag(ReadVariableTag.class);
+                }
                 value.accept(StatementCompiler.this);
                 endAugAssign();
                 endStoreLocal(node.id, b);
+                if (tagged) {
+                    endVariableTag(true, b);
+                }
 
                 endSourceSection(b);
                 return null;
@@ -4572,9 +4689,11 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
             // condition
             b.beginBlock();
             b.emitTraceLineAtLoopHeader(currentLocation.startLine);
+            boolean tagged = beginDirectVariableWrite(node.target, value, b);
             b.beginForIterate(value);
             b.emitLoadStackValue(iter);
             b.endForIterate();
+            endDirectVariableWrite(tagged, b);
             b.endBlock();
 
             // body

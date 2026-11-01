@@ -115,6 +115,7 @@ import com.oracle.graal.python.nodes.ErrorMessages;
 import com.oracle.graal.python.nodes.PRaiseNode;
 import com.oracle.graal.python.nodes.StringLiterals;
 import com.oracle.graal.python.nodes.bytecode_dsl.BytecodeDSLCodeUnit;
+import com.oracle.graal.python.nodes.bytecode_dsl.BytecodeDSLCodeUnit.VariableAccess;
 import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode;
 import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNodeGen;
 import com.oracle.graal.python.nodes.call.special.LookupAndCallBinaryNode;
@@ -1428,10 +1429,16 @@ public final class MarshalModuleBuiltins extends PythonBuiltins {
             int yieldFromGeneratorIndex = readInt();
             int instrumentationDataIndex = readInt();
             int maxProfileCEventStackSize = readInt();
+            int accessCount = readSize();
+            List<VariableAccess> variableAccesses = new ArrayList<>(accessCount);
+            for (int i = 0; i < accessCount; i++) {
+                variableAccesses.add(new VariableAccess(readString(true).toJavaStringUncached(), readInt(), readInt(), readInt(), readInt(), readInt() != 0));
+            }
 
             BytecodeSupplier provider = new BytecodeSupplier(serialized, bytecodeFile, sourceReference, bytecodeOffset, bytecodeSize, cacheKey);
             return new BytecodeDSLCodeUnit(name, qualname, argCount, kwOnlyArgCount, positionalOnlyArgCount, flags, names, varnames, cellvars, freevars, constants,
-                            startLine, startColumn, endLine, endColumn, classcellIndex, selfIndex, yieldFromGeneratorIndex, instrumentationDataIndex, maxProfileCEventStackSize, provider);
+                            startLine, startColumn, endLine, endColumn, classcellIndex, selfIndex, yieldFromGeneratorIndex, instrumentationDataIndex, maxProfileCEventStackSize, variableAccesses,
+                            provider);
         }
 
         private void writeCodeUnit(BytecodeDSLCodeUnit code) throws IOException {
@@ -1467,6 +1474,15 @@ public final class MarshalModuleBuiltins extends PythonBuiltins {
             writeInt(code.yieldFromGeneratorIndex);
             writeInt(code.instrumentationDataIndex);
             writeInt(code.maxProfileCEventStackSize);
+            writeInt(code.variableAccesses.size());
+            for (VariableAccess access : code.variableAccesses) {
+                writeString(PythonUtils.toTruffleStringUncached(access.name()));
+                writeInt(access.startLine());
+                writeInt(access.startColumn());
+                writeInt(access.endLine());
+                writeInt(access.endColumn());
+                writeInt(access.write() ? 1 : 0);
+            }
         }
 
         private PCode readCode() {
