@@ -192,6 +192,7 @@ import com.oracle.graal.python.lib.PySequenceContainsNode;
 import com.oracle.graal.python.lib.PyTupleCheckNode;
 import com.oracle.graal.python.lib.RichCmpOp;
 import com.oracle.graal.python.nodes.BuiltinNames;
+import com.oracle.graal.python.nodes.instrumentation.VariableAccessDescriptor;
 import com.oracle.graal.python.nodes.ErrorMessages;
 import com.oracle.graal.python.nodes.PGuards;
 import com.oracle.graal.python.nodes.PRaiseNode;
@@ -286,6 +287,9 @@ import com.oracle.truffle.api.bytecode.BytecodeConfig;
 import com.oracle.truffle.api.bytecode.BytecodeFrame;
 import com.oracle.truffle.api.bytecode.BytecodeLocation;
 import com.oracle.truffle.api.bytecode.BytecodeNode;
+import com.oracle.truffle.api.bytecode.TagTreeNode;
+import com.oracle.truffle.api.instrumentation.StandardTags.ReadVariableTag;
+import com.oracle.truffle.api.instrumentation.StandardTags.WriteVariableTag;
 import com.oracle.truffle.api.bytecode.BytecodeRootNode;
 import com.oracle.truffle.api.bytecode.ConstantOperand;
 import com.oracle.truffle.api.bytecode.ContinuationResult;
@@ -492,6 +496,20 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                 rootNode.getCallTarget();
             }
         }
+    }
+
+    @Override
+    @TruffleBoundary
+    public Object getInstrumentationNodeObject(TagTreeNode node) {
+        if (co == null) {
+            return null;
+        }
+        if (node.hasTag(ReadVariableTag.class)) {
+            return VariableAccessDescriptor.create(ReadVariableTag.NAME, false, node.getSourceSections(), co.variableAccesses);
+        } else if (node.hasTag(WriteVariableTag.class)) {
+            return VariableAccessDescriptor.create(WriteVariableTag.NAME, true, node.getSourceSections(), co.variableAccesses);
+        }
+        return null;
     }
 
     public final PythonLanguage getLanguage() {

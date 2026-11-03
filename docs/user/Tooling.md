@@ -36,6 +36,30 @@ You can inspect variables, set watch expressions, interactively evaluate code sn
 
    ![Chrome Inspector](./assets/Chrome_Inspector.png)
 
+## Variable metadata for instruments
+
+The Elide fork's Bytecode DSL interpreter exposes source-level name reads and assignment targets
+through Truffle's `ReadVariableTag` and `WriteVariableTag`. Node objects supply `readVariableName`
+or `writeVariableName`, respectively. Each name is an immutable interop string with the source
+location of that occurrence; operations that assign multiple names can return an array of these
+strings. A tag's program location retains the enclosing statement or expression root for debugger
+stack walks; use the name object's source location for the exact identifier range. Names reflect Python identifier normalization and private-name mangling. Source positions
+use Truffle's UTF-16 columns, including for non-BMP identifiers.
+
+For unexecuted source, attach a source-section load listener before calling the instrument
+`Env.parse(Source)` API. Retain the returned call target while collecting facts. Reading node
+objects and their name/location descriptors does not require an entered Python context or guest
+values, and supports concurrent readers. Code-unit serialization preserves this metadata.
+
+This interface describes compiler-emitted accesses, rather than a complete source symbol index.
+It covers name expressions, assignment and augmented-assignment targets, loop targets and
+comprehension targets. Attribute/subscript updates are not variable bindings; only the name
+expressions used to compute their receivers and indices are tagged. Parameter declarations,
+import/definition bindings, deletion, optimized-away expressions, and AST-created names without
+valid source ranges are outside this initial coverage. A name's location is its access site, not
+its declaration or proof that an import/reference resolves. Native Image tooling qualification
+remains separate from JVM testing.
+
 ## Profiling
 
 GraalPy provides three main profiling capabilities: CPU sampling, CPU tracing, and memory tracing.

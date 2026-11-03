@@ -413,6 +413,8 @@ public class PythonDebugTest {
             session.install(Breakpoint.newBuilder(DebuggerTester.getSourceImpl(source)).lineIs(2).build());
             session.install(Breakpoint.newBuilder(DebuggerTester.getSourceImpl(source)).lineIs(4).build());
             tester.startEval(source);
+            // SDK .23 includes the debugger's once-per-statement breakpoint semantics: resuming
+            // inside a yield does not hit its BEFORE breakpoint a second time.
 
             expectSuspended((SuspendedEvent event) -> {
                 DebugStackFrame frame = event.getTopStackFrame();
@@ -422,18 +424,8 @@ public class PythonDebugTest {
             });
             expectSuspended((SuspendedEvent event) -> {
                 DebugStackFrame frame = event.getTopStackFrame();
-                assertEquals(2, frame.getSourceSection().getStartLine());
-                event.prepareContinue();
-            });
-            expectSuspended((SuspendedEvent event) -> {
-                DebugStackFrame frame = event.getTopStackFrame();
                 assertEquals(4, frame.getSourceSection().getStartLine());
                 checkStack(frame, "gen_fun", "a", "1", "b", "2", "c", "3");
-                event.prepareContinue();
-            });
-            expectSuspended((SuspendedEvent event) -> {
-                DebugStackFrame frame = event.getTopStackFrame();
-                assertEquals(4, frame.getSourceSection().getStartLine());
                 event.prepareContinue();
             });
             assertEquals("3", tester.expectDone());
