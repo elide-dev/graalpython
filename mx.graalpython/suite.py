@@ -53,7 +53,7 @@ suite = {
             },
             {
                 "name": "tools",
-                "version": "fe7f970d99b666853ebe7abd14f14328aec29118",
+                "version": "e966bdbe04017d068cb0160804df9f9e22d3d425",
                 "subdir": True,
                 "urls": [
                     {"url": "https://github.com/elide-dev/graal", "kind": "git"},
@@ -61,7 +61,7 @@ suite = {
             },
             {
                 "name": "regex",
-                "version": "fe7f970d99b666853ebe7abd14f14328aec29118",
+                "version": "e966bdbe04017d068cb0160804df9f9e22d3d425",
                 "subdir": True,
                 "urls": [
                     {"url": "https://github.com/elide-dev/graal", "kind": "git"},

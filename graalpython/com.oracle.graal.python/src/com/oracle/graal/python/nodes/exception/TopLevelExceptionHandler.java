@@ -41,7 +41,6 @@
 package com.oracle.graal.python.nodes.exception;
 
 import static com.oracle.graal.python.builtins.modules.io.IONodes.T_WRITE;
-import static com.oracle.graal.python.nodes.BuiltinNames.T_SYS;
 import static com.oracle.graal.python.nodes.BuiltinNames.T___BUILTINS__;
 import static com.oracle.graal.python.runtime.exception.PythonErrorType.SystemExit;
 import static com.oracle.graal.python.util.PythonUtils.TS_ENCODING;
@@ -61,6 +60,7 @@ import com.oracle.graal.python.builtins.objects.module.PythonModule;
 import com.oracle.graal.python.lib.PyObjectCallMethodObjArgs;
 import com.oracle.graal.python.lib.PyObjectStrAsObjectNode;
 import com.oracle.graal.python.nodes.BuiltinNames;
+import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode;
 import com.oracle.graal.python.nodes.object.BuiltinClassProfiles.IsBuiltinClassProfile;
 import com.oracle.graal.python.nodes.object.GetClassNode;
 import com.oracle.graal.python.nodes.object.GetClassNode.GetPythonObjectClassNode;
@@ -194,7 +194,7 @@ public final class TopLevelExceptionHandler extends RootNode {
             Object type = GetClassNode.executeUncached(pythonException);
             Object tb = ExceptionNodes.GetTracebackNode.executeUncached(pythonException);
 
-            PythonModule sys = getContext().lookupBuiltinModule(T_SYS);
+            PythonModule sys = getContext().getSysModule();
             sys.setAttribute(BuiltinNames.T_LAST_TYPE, type);
             sys.setAttribute(BuiltinNames.T_LAST_VALUE, pythonException);
             sys.setAttribute(BuiltinNames.T_LAST_TRACEBACK, tb);
@@ -312,7 +312,9 @@ public final class TopLevelExceptionHandler extends RootNode {
         PythonContext pythonContext = getContext();
         PythonModule mainModule = null;
         PythonLanguage language = getPythonLanguage();
-        PCode code = PFactory.createCode(language, innerCallTarget, PythonUtils.internString(TruffleString.fromJavaStringUncached(source.getName(), TS_ENCODING)));
+        // The code object describes the module; polyglot argument adaptation stays in innerCallTarget.
+        PBytecodeDSLRootNode moduleRoot = (PBytecodeDSLRootNode) PythonLanguage.unwrapRootNode(innerCallTarget.getRootNode());
+        PCode code = PFactory.createCode(language, moduleRoot, PythonUtils.internString(TruffleString.fromJavaStringUncached(source.getName(), TS_ENCODING)));
         TruffleString originalFilename = code.getFilename();
         if (source.isInteractive()) {
             code.fixCoFilename(pythonContext.getNextInteractiveSourceFilename(originalFilename));

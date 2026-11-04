@@ -308,6 +308,24 @@ public class LoggingPosixSupport extends PosixSupport {
 
     @Override
     @TruffleBoundary
+    public final int msvcrtKbhit() throws PosixException {
+        logEnter("msvcrtKbhit", "");
+        try {
+            return logExit("msvcrtKbhit", "%d", delegate.msvcrtKbhit());
+        } catch (PosixException e) {
+            throw logException("msvcrtKbhit", e);
+        }
+    }
+
+    @Override
+    @TruffleBoundary
+    public final boolean supportsVirtualTerminal() {
+        logEnter("supportsVirtualTerminal", "");
+        return logExit("supportsVirtualTerminal", "%s", delegate.supportsVirtualTerminal());
+    }
+
+    @Override
+    @TruffleBoundary
     public final int[] pipe() throws PosixException {
         logEnter("pipe", "");
         try {
@@ -540,10 +558,10 @@ public class LoggingPosixSupport extends PosixSupport {
 
     @Override
     @TruffleBoundary
-    public final void symlinkat(Object target, int linkpathDirFd, Object linkpath) throws PosixException {
-        logEnter("symlinkAt", "%s, %d, %s", target, linkpathDirFd, linkpath);
+    public final void symlinkat(Object target, int linkpathDirFd, Object linkpath, boolean targetIsDirectory) throws PosixException {
+        logEnter("symlinkAt", "%s, %d, %s, %s", target, linkpathDirFd, linkpath, targetIsDirectory);
         try {
-            delegate.symlinkat(target, linkpathDirFd, linkpath);
+            delegate.symlinkat(target, linkpathDirFd, linkpath, targetIsDirectory);
         } catch (PosixException e) {
             throw logException("symlinkAt", e);
         }

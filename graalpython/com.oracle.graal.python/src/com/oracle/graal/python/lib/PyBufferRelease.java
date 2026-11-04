@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -38,12 +38,53 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-package com.oracle.graal.python.nodes.function.builtins;
+package com.oracle.graal.python.lib;
 
-import com.oracle.graal.python.nodes.function.PythonBuiltinBaseNode;
+import com.oracle.graal.python.builtins.objects.memoryview.MemoryViewNodes.ReleaseNode;
+import com.oracle.graal.python.builtins.objects.memoryview.PMemoryView;
+import com.oracle.graal.python.nodes.PNodeWithContext;
+import com.oracle.truffle.api.dsl.Cached;
+import com.oracle.truffle.api.dsl.Fallback;
+import com.oracle.truffle.api.dsl.GenerateInline;
+import com.oracle.truffle.api.dsl.GenerateUncached;
+import com.oracle.truffle.api.dsl.NeverDefault;
+import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.VirtualFrame;
 
-public abstract class PythonSenaryBuiltinNode extends PythonBuiltinBaseNode {
+/**
+ * Equivalent of CPython's {@code PyBuffer_Release}, but must not be called multiple times on the
+ * same buffer.
+ */
+@GenerateUncached
+@GenerateInline(false)
+public abstract class PyBufferRelease extends PNodeWithContext {
+    public abstract void execute(VirtualFrame frame, Object buffer);
 
-    public abstract Object execute(VirtualFrame frame, Object arg, Object arg2, Object arg3, Object arg4, Object arg5, Object arg6);
+    @Specialization
+    static void doMemoryView(VirtualFrame frame, PMemoryView buffer,
+                    @Cached ReleaseNode releaseNode) {
+        /*
+         * Helper memoryviews created to hold native buffers must release their buffer immediately.
+         */
+        if (buffer.shouldReleaseImmediately()) {
+            releaseNode.execute(frame, buffer);
+        } else {
+            long exports = buffer.getExports().decrementAndGet();
+            assert exports >= 0;
+        }
+    }
+
+    @Fallback
+    static void doOther(@SuppressWarnings("unused") Object buffer) {
+        // Other buffers do not need releasing.
+    }
+
+    @NeverDefault
+    public static PyBufferRelease create() {
+        return PyBufferReleaseNodeGen.create();
+    }
+
+    public static PyBufferRelease getUncached() {
+        return PyBufferReleaseNodeGen.getUncached();
+    }
 }

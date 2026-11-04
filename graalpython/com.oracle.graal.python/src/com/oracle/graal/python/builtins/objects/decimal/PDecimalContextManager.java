@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -38,49 +38,26 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+package com.oracle.graal.python.builtins.objects.decimal;
 
-package com.oracle.graal.python.nodes.util;
+import com.oracle.graal.python.builtins.objects.object.PythonBuiltinObject;
+import com.oracle.truffle.api.object.Shape;
 
-import com.oracle.graal.python.builtins.PythonBuiltinClassType;
-import com.oracle.graal.python.builtins.objects.function.Signature;
-import com.oracle.graal.python.nodes.ErrorMessages;
-import com.oracle.graal.python.nodes.PRaiseNode;
-import com.oracle.graal.python.nodes.PRootNode;
-import com.oracle.truffle.api.TruffleLanguage;
-import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.strings.TruffleString;
+public final class PDecimalContextManager extends PythonBuiltinObject {
+    private final PDecimalContext outer;
+    private final PDecimalContext local;
 
-public class BadOPCodeNode extends PRootNode {
-
-    private final String name;
-
-    public BadOPCodeNode(TruffleLanguage<?> language) {
-        super(language);
-        this.name = "<invalid code>";
+    public PDecimalContextManager(Object cls, Shape instanceShape, PDecimalContext outer, PDecimalContext local) {
+        super(cls, instanceShape);
+        this.outer = outer;
+        this.local = local;
     }
 
-    public BadOPCodeNode(TruffleLanguage<?> language, TruffleString name) {
-        super(language);
-        this.name = name.toJavaStringUncached();
+    public PDecimalContext getOuter() {
+        return outer;
     }
 
-    @Override
-    public Object execute(VirtualFrame frame) {
-        throw PRaiseNode.raiseStatic(this, PythonBuiltinClassType.SystemError, ErrorMessages.UNKNOWN_OPCODE);
-    }
-
-    @Override
-    public Signature getSignature() {
-        return Signature.EMPTY;
-    }
-
-    @Override
-    public boolean isPythonInternal() {
-        return false;
-    }
-
-    @Override
-    public String getName() {
-        return name;
+    public PDecimalContext getLocal() {
+        return local;
     }
 }

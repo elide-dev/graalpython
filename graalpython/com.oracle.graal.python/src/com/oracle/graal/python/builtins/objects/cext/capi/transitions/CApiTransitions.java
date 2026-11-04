@@ -89,7 +89,6 @@ import com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePython
 import com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.FromCharPointerNode;
 import com.oracle.graal.python.builtins.objects.cext.capi.ExternalFunctionInvoker;
 import com.oracle.graal.python.builtins.objects.cext.capi.NativeCAPISymbol;
-import com.oracle.graal.python.builtins.objects.cext.capi.PyMemoryViewWrapper;
 import com.oracle.graal.python.builtins.objects.cext.capi.transitions.CApiTransitionsFactory.AllocateNativeObjectStubNodeGen;
 import com.oracle.graal.python.builtins.objects.cext.capi.transitions.CApiTransitionsFactory.FirstToNativeNodeGen;
 import com.oracle.graal.python.builtins.objects.cext.capi.transitions.CApiTransitionsFactory.NativeToPythonClassInternalNodeGen;
@@ -111,7 +110,6 @@ import com.oracle.graal.python.builtins.objects.cext.structs.CStructs;
 import com.oracle.graal.python.builtins.objects.floats.PFloat;
 import com.oracle.graal.python.builtins.objects.getsetdescriptor.DescriptorDeleteMarker;
 import com.oracle.graal.python.builtins.objects.ints.PInt;
-import com.oracle.graal.python.builtins.objects.memoryview.PMemoryView;
 import com.oracle.graal.python.builtins.objects.object.PythonObject;
 import com.oracle.graal.python.builtins.objects.str.PString;
 import com.oracle.graal.python.builtins.objects.str.StringNodes.StringMaterializeNode;
@@ -1144,14 +1142,14 @@ public abstract class CApiTransitions {
     @TruffleBoundary
     public static void nativeLookupPut(HandleContext context, long pointer, NativeObjectReference value) {
         assert !HandlePointerConverter.pointsToPyHandleSpace(pointer);
-        assert !context.nativeLookup.containsKey(pointer) || context.nativeLookup.get(pointer).get() == null;
+        assert !PythonOptions.detailedAssertionsEnabled() || !context.nativeLookup.containsKey(pointer) || context.nativeLookup.get(pointer).get() == null;
         context.nativeLookup.put(pointer, value);
     }
 
     @TruffleBoundary
     public static void nativeLookupPut(HandleContext context, long pointer, PythonObjectReference value) {
         assert !HandlePointerConverter.pointsToPyHandleSpace(pointer);
-        assert !context.nativeLookup.containsKey(pointer) || context.nativeLookup.get(pointer).get() == null;
+        assert !PythonOptions.detailedAssertionsEnabled() || !context.nativeLookup.containsKey(pointer) || context.nativeLookup.get(pointer).get() == null;
         context.nativeLookup.put(pointer, value);
     }
 
@@ -1164,7 +1162,7 @@ public abstract class CApiTransitions {
         assert idx != 0;
         assert !HandlePointerConverter.pointsToPyHandleSpace(pointer);
         IdReference<?> result = context.nativeTypeLookup[idx];
-        assert result == nativeLookupGet(context, pointer);
+        assert !PythonOptions.detailedAssertionsEnabled() || result == nativeLookupGet(context, pointer);
         return result;
     }
 
@@ -1355,12 +1353,14 @@ public abstract class CApiTransitions {
         }
 
         public static long pointerToLong(long pointer) {
-            assert Integer.toHexString((int) ((pointer & ~(HANDLE_TAG_BIT | INTEGER_TAG_BIT)) >> 3)).equals(Long.toHexString(((pointer & ~(HANDLE_TAG_BIT | INTEGER_TAG_BIT)) >> 3)));
+            assert !PythonOptions.detailedAssertionsEnabled() || Integer.toHexString((int) ((pointer & ~(HANDLE_TAG_BIT | INTEGER_TAG_BIT)) >> 3)).equals(Long.toHexString(((pointer &
+                            ~(HANDLE_TAG_BIT | INTEGER_TAG_BIT)) >> 3)));
             return (int) (pointer >> 3);
         }
 
         public static double pointerToDouble(long pointer) {
-            assert Integer.toHexString((int) ((pointer & ~(HANDLE_TAG_BIT | FLOAT_TAG_BIT)) >> 3)).equals(Long.toHexString(((pointer & ~(HANDLE_TAG_BIT | FLOAT_TAG_BIT)) >> 3)));
+            assert !PythonOptions.detailedAssertionsEnabled() || Integer.toHexString((int) ((pointer & ~(HANDLE_TAG_BIT | FLOAT_TAG_BIT)) >> 3)).equals(Long.toHexString(((pointer & ~(HANDLE_TAG_BIT |
+                            FLOAT_TAG_BIT)) >> 3)));
             return Float.intBitsToFloat((int) (pointer >> 3));
         }
     }
@@ -1411,16 +1411,6 @@ public abstract class CApiTransitions {
             return ptr;
         }
 
-        @Specialization
-        @TruffleBoundary
-        static long doMemoryView(@SuppressWarnings("unused") Node inliningTarget, PMemoryView mv, long initialRefCount) {
-            assert !mv.isNative();
-            assert initialRefCount == IMMORTAL_REFCNT;
-            long ptr = PyMemoryViewWrapper.allocate(mv);
-            CApiTransitions.createReference(PythonContext.get(null), mv, ptr);
-            return ptr;
-        }
-
         @Specialization(guards = "isSpecialSingleton(singletonObject)")
         @TruffleBoundary
         static long doSpecialSingleton(@SuppressWarnings("unused") Node inliningTarget, PythonAbstractObject singletonObject, long initialRefCount) {
@@ -1433,7 +1423,7 @@ public abstract class CApiTransitions {
             return AllocateNativeObjectStubNodeGen.getUncached().execute(inliningTarget, singletonObject, type, CStructs.GraalPyObject, IMMORTAL_REFCNT, false, 0);
         }
 
-        @Specialization(guards = {"!isManagedClass(pythonObject)", "!isMemoryView(pythonObject)"})
+        @Specialization(guards = "!isManagedClass(pythonObject)")
         static long doOther(Node inliningTarget, PythonObject pythonObject, long initialRefCount,
                         @Exclusive @Cached InlinedConditionProfile isVarObjectProfile,
                         @Exclusive @Cached InlinedConditionProfile isGcProfile,
@@ -1446,8 +1436,6 @@ public abstract class CApiTransitions {
 
             // for types, we always need to allocate the full PyTypeObject
             assert !(pythonObject instanceof PythonManagedClass);
-            // for memoryview, we always need to allocate the full PyMemoryViewObject
-            assert !(pythonObject instanceof PMemoryView);
             assert !CApiContext.isSpecialSingleton(pythonObject);
 
             Object type = getClassNode.execute(inliningTarget, pythonObject);
@@ -1961,7 +1949,7 @@ public abstract class CApiTransitions {
                 pointer = pythonObject.getNativePointer();
             }
             assert pythonObject.isNative();
-            assert isGcTrackedIfNecessary(pythonObject);
+            assert !PythonOptions.detailedAssertionsEnabled() || isGcTrackedIfNecessary(pythonObject);
             return pointer;
         }
 
@@ -2044,7 +2032,7 @@ public abstract class CApiTransitions {
                 }
                 pointer = pythonObject.getNativePointer();
             }
-            assert isGcTrackedIfNecessary(pythonObject);
+            assert !PythonOptions.detailedAssertionsEnabled() || isGcTrackedIfNecessary(pythonObject);
             assert pythonObject.isNative();
             return pointer;
         }
@@ -2063,12 +2051,12 @@ public abstract class CApiTransitions {
         }
 
         /**
-         * PMemoryView, static native classes, built-in classes, and singletons True/False are
+         * Static native classes, built-in classes, and singletons True/False are
          * immortal.
          */
         private static boolean isImmortalPythonObject(PythonContext context, PythonObject pythonObject) {
             assert !CApiContext.isSpecialSingleton(pythonObject);
-            return pythonObject instanceof PythonBuiltinClass || context.getTrue() == pythonObject || context.getFalse() == pythonObject || pythonObject instanceof PMemoryView;
+            return pythonObject instanceof PythonBuiltinClass || context.getTrue() == pythonObject || context.getFalse() == pythonObject;
         }
 
         /**
@@ -2669,7 +2657,7 @@ public abstract class CApiTransitions {
 
         LOGGER.finest(() -> PythonUtils.formatJString("addNativeRefCount %x %x %d + %d", pointer, refCount, refCount, refCntDelta));
 
-        assert !isDeallocatingSlowPath(pointer);
+        assert !PythonOptions.detailedAssertionsEnabled() || !isDeallocatingSlowPath(pointer);
         UNSAFE.putLong(pointer + TP_REFCNT_OFFSET, refCount + refCntDelta);
         return refCount + refCntDelta;
     }
@@ -2677,7 +2665,7 @@ public abstract class CApiTransitions {
     public static long subNativeRefCount(long pointer, long refCntDelta) {
         assert PythonContext.get(null).isNativeAccessAllowed();
         assert PythonContext.get(null).ownsGil();
-        assert !isDeallocatingSlowPath(pointer);
+        assert !PythonOptions.detailedAssertionsEnabled() || !isDeallocatingSlowPath(pointer);
         long refCount = UNSAFE.getLong(pointer + TP_REFCNT_OFFSET);
         if (refCount == IMMORTAL_REFCNT) {
             return IMMORTAL_REFCNT;

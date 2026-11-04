@@ -94,12 +94,12 @@ import static com.oracle.graal.python.nodes.BuiltinNames.T_PYTHONBREAKPOINT;
 import static com.oracle.graal.python.nodes.BuiltinNames.T_STDERR;
 import static com.oracle.graal.python.nodes.BuiltinNames.T_STDIN;
 import static com.oracle.graal.python.nodes.BuiltinNames.T_STDOUT;
-import static com.oracle.graal.python.nodes.BuiltinNames.T_SYS;
 import static com.oracle.graal.python.nodes.BuiltinNames.T_UNRAISABLEHOOK;
 import static com.oracle.graal.python.nodes.BuiltinNames.T___BREAKPOINTHOOK__;
 import static com.oracle.graal.python.nodes.BuiltinNames.T___DISPLAYHOOK__;
 import static com.oracle.graal.python.nodes.BuiltinNames.T___EXCEPTHOOK__;
 import static com.oracle.graal.python.nodes.BuiltinNames.T___GRAALPYTHON__;
+import static com.oracle.graal.python.nodes.BuiltinNames.T___MAIN__;
 import static com.oracle.graal.python.nodes.BuiltinNames.T___NOTES__;
 import static com.oracle.graal.python.nodes.BuiltinNames.T___STDERR__;
 import static com.oracle.graal.python.nodes.BuiltinNames.T___STDIN__;
@@ -203,6 +203,7 @@ import com.oracle.graal.python.builtins.objects.str.StringNodes;
 import com.oracle.graal.python.builtins.objects.str.StringUtils;
 import com.oracle.graal.python.builtins.objects.traceback.PTraceback;
 import com.oracle.graal.python.builtins.objects.traceback.TracebackBuiltins;
+import com.oracle.graal.python.builtins.objects.type.TypeNodes;
 import com.oracle.graal.python.builtins.objects.tuple.PTuple;
 import com.oracle.graal.python.builtins.objects.tuple.StructSequence;
 import com.oracle.graal.python.builtins.objects.tuple.TupleBuiltins;
@@ -615,9 +616,11 @@ public final class SysModuleBuiltins extends PythonBuiltins {
 
     public void postInitialize0(Python3Core core) {
         super.postInitialize(core);
-        PythonModule sys = core.lookupBuiltinModule(T_SYS);
+        PythonModule sys = core.getSysModule();
         PythonContext context = core.getContext();
         PythonLanguage language = core.getLanguage();
+
+        sys.setAttribute(tsInternedLiteral("_xoptions"), PFactory.createDict(language));
 
         sys.setAttribute(tsInternedLiteral("stdlib_module_names"), createStdLibModulesSet(language));
 
@@ -646,7 +649,7 @@ public final class SysModuleBuiltins extends PythonBuiltins {
         sys.setAttribute(tsInternedLiteral("warnoptions"), PFactory.createList(language, warnoptions));
 
         sys.setAttribute(tsInternedLiteral("flags"), PFactory.createStructSeq(language, SysModuleBuiltins.FLAGS_DESC,
-                        PInt.intValue(!language.getEngineOption(PythonOptions.PythonOptimizeFlag)), // debug
+                        0, // debug
                         PInt.intValue(context.getOption(PythonOptions.InspectFlag)), // inspect
                         PInt.intValue(context.getOption(PythonOptions.TerminalIsInteractive)), // interactive
                         PInt.intValue(language.getEngineOption(PythonOptions.PythonOptimizeFlag)), // optimize
@@ -680,13 +683,14 @@ public final class SysModuleBuiltins extends PythonBuiltins {
     }
 
     private static void patchRuntimeSysState(Python3Core core) {
-        PythonModule sys = core.lookupBuiltinModule(T_SYS);
+        PythonModule sys = core.getSysModule();
         PythonContext context = core.getContext();
         PythonLanguage language = core.getLanguage();
 
         String[] args = context.getEnv().getApplicationArguments();
         sys.setAttribute(tsInternedLiteral("argv"), PFactory.createList(language, convertToObjectArray(args)));
         sys.setAttribute(tsInternedLiteral("orig_argv"), PFactory.createList(language, convertToObjectArray(PythonOptions.getOrigArgv(core.getContext()))));
+        sys.setAttribute(tsInternedLiteral("_xoptions"), createXOptions(language, context));
 
         TruffleString executable = context.getOption(PythonOptions.Executable);
         TruffleString baseExecutable = context.getOption(PythonOptions.BaseExecutable);
@@ -741,6 +745,21 @@ public final class SysModuleBuiltins extends PythonBuiltins {
         return PFactory.createFrozenSet(language, storage);
     }
 
+    private static PDict createXOptions(PythonLanguage language, PythonContext context) {
+        TruffleString[] options = PythonOptions.getXOptions(context);
+        EconomicMapStorage storage = EconomicMapStorage.create(options.length);
+        for (TruffleString option : options) {
+            String javaOption = option.toJavaStringUncached();
+            int equals = javaOption.indexOf('=');
+            if (equals < 0) {
+                storage.putUncached(option, true);
+            } else {
+                storage.putUncached(toTruffleStringUncached(javaOption.substring(0, equals)), toTruffleStringUncached(javaOption.substring(equals + 1)));
+            }
+        }
+        return PFactory.createDict(language, storage);
+    }
+
     /**
      * Like {@link PythonUtils#toTruffleStringArrayUncached(String[])}, but creates an array of
      * {@link Object}'s. The intended use of this method is in slow-path in calls to methods like
@@ -774,7 +793,7 @@ public final class SysModuleBuiltins extends PythonBuiltins {
         if (!core.getContext().getEnv().isPreInitialization() || preinitStdio) {
             initStd(core);
         }
-        PythonModule sys = core.lookupBuiltinModule(T_SYS);
+        PythonModule sys = core.getSysModule();
         core.getContext().registerCApiHook(() -> {
             sys.setAttribute(toTruffleStringUncached("_dllhandle_name"), toTruffleStringUncached(core.getContext().getCApiContext().getLibraryName()));
         });
@@ -802,7 +821,7 @@ public final class SysModuleBuiltins extends PythonBuiltins {
         TruffleString stdioEncoding = gp.getStdIOEncoding();
         TruffleString stdioError = gp.getStdIOError();
         PosixSupport posixSupport = context.getPosixSupport();
-        PythonModule sysModule = core.lookupBuiltinModule(T_SYS);
+        PythonModule sysModule = core.getSysModule();
 
         boolean buffering = !context.getOption(PythonOptions.UnbufferedIO);
 
@@ -1477,7 +1496,7 @@ public final class SysModuleBuiltins extends PythonBuiltins {
                     "* err_msg: Error message, can be None.\n" +
                     "* object: Object causing the exception, can be None.")
     @GenerateNodeFactory
-    abstract static class UnraisableHookNode extends PythonBuiltinNode {
+    public abstract static class UnraisableHookNode extends PythonBuiltinNode {
 
         private void writeUnraisableExc(Node inliningTarget, TracebackBuiltins.GetTracebackFrameNode getTbFrameNode, TracebackBuiltins.MaterializeTruffleStacktraceNode materializeStNode,
                         PythonModule sys, Object out, Object excType, Object excValue, Object excTb, Object errMsg, Object obj) {
@@ -1508,8 +1527,7 @@ public final class SysModuleBuiltins extends PythonBuiltins {
 
             TruffleString className;
             try {
-                className = getTypeName(excType);
-                className = classNameNoDot(className);
+                className = TypeNodes.GetQualNameNode.executeUncached(excType);
             } catch (PException pe) {
                 className = null;
             }
@@ -1519,7 +1537,7 @@ public final class SysModuleBuiltins extends PythonBuiltins {
                 fileWriteString(out, T_VALUE_UNKNOWN);
             } else {
                 moduleName = castToString(v);
-                if (!moduleName.equalsUncached(T_BUILTINS, TS_ENCODING)) {
+                if (!moduleName.equalsUncached(T_BUILTINS, TS_ENCODING) && !moduleName.equalsUncached(T___MAIN__, TS_ENCODING)) {
                     fileWriteString(out, moduleName);
                     fileWriteString(out, T_DOT);
                 }
@@ -1573,6 +1591,9 @@ public final class SysModuleBuiltins extends PythonBuiltins {
         private void writeUnraisableExc(Node inliningTarget, TracebackBuiltins.GetTracebackFrameNode getTbFrameNode, TracebackBuiltins.MaterializeTruffleStacktraceNode materializeStNode,
                         PythonModule sys, Object excType, Object excValue, Object excTb, Object errMsg, Object obj) {
             Object stdErr = objectLookupAttr(sys, T_STDERR);
+            if (stdErr == PNone.NO_VALUE || stdErr == PNone.NONE) {
+                return;
+            }
             writeUnraisableExc(inliningTarget, getTbFrameNode, materializeStNode, sys, stdErr, excType, excValue, excTb, errMsg, obj);
             fileFlush(stdErr);
         }

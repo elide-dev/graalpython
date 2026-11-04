@@ -90,6 +90,8 @@ import com.oracle.graal.python.nodes.call.CallNode;
 import com.oracle.graal.python.nodes.exception.TopLevelExceptionHandler;
 import com.oracle.graal.python.nodes.frame.GetFrameLocalsNode;
 import com.oracle.graal.python.nodes.frame.MaterializeFrameNode;
+import com.oracle.graal.python.nodes.function.BuiltinFunctionRootNode;
+import com.oracle.graal.python.pegparser.AbstractParser;
 import com.oracle.graal.python.pegparser.FutureFeature;
 import com.oracle.graal.python.pegparser.InputType;
 import com.oracle.graal.python.pegparser.NodeFactory;
@@ -100,6 +102,7 @@ import com.oracle.graal.python.pegparser.sst.ModTy;
 import com.oracle.graal.python.pegparser.sst.StmtTy;
 import com.oracle.graal.python.pegparser.sst.TypeParamTy;
 import com.oracle.graal.python.pegparser.tokenizer.SourceRange;
+import com.oracle.graal.python.runtime.CallerFlags;
 import com.oracle.graal.python.runtime.GilNode;
 import com.oracle.graal.python.runtime.IndirectCallData.BoundaryCallData;
 import com.oracle.graal.python.runtime.IndirectCallData.InteropCallData;
@@ -561,14 +564,14 @@ public final class PythonLanguage extends TruffleLanguage<PythonContext> {
         EnumSet<FutureFeature> futureFeatures;
         boolean topLevel;
         List<String> argumentNames;
-        boolean interactiveTerminal;
+        EnumSet<AbstractParser.Flags> parserFlags = EnumSet.noneOf(AbstractParser.Flags.class);
         if (source.isInteractive()) {
             inputType = InputType.SINGLE;
             optimize = 0;
             futureFeatures = EnumSet.noneOf(FutureFeature.class);
             topLevel = true;
             argumentNames = request.getArgumentNames();
-            interactiveTerminal = true;
+            parserFlags.add(AbstractParser.Flags.INTERACTIVE_TERMINAL);
         } else {
             var sourceOptions = source.getOptions(this);
             String kind = sourceOptions.get(PythonSourceOptions.Kind);
@@ -583,9 +586,8 @@ public final class PythonLanguage extends TruffleLanguage<PythonContext> {
             int flags = sourceOptions.get(PythonSourceOptions.Flags);
             futureFeatures = FutureFeature.fromFlags(flags);
             argumentNames = request.getArgumentNames().isEmpty() ? null : request.getArgumentNames();
-            interactiveTerminal = false;
         }
-        return parse(context, source, inputType, topLevel, optimize, interactiveTerminal, argumentNames, futureFeatures);
+        return parse(context, source, inputType, topLevel, optimize, parserFlags, argumentNames, futureFeatures);
     }
 
     public RootCallTarget callTargetFromBytecode(Source source, BytecodeDSLCodeUnit code) {
@@ -597,19 +599,19 @@ public final class PythonLanguage extends TruffleLanguage<PythonContext> {
         return PythonUtils.getOrCreateCallTarget(rootNode);
     }
 
-    public RootCallTarget parse(PythonContext context, Source source, InputType type, boolean topLevel, int optimize, boolean interactiveTerminal, List<String> argumentNames,
+    public RootCallTarget parse(PythonContext context, Source source, InputType type, boolean topLevel, int optimize, List<String> argumentNames,
                     EnumSet<FutureFeature> futureFeatures) {
-        return parse(context, source, type, topLevel, optimize, interactiveTerminal, false, argumentNames, futureFeatures);
+        return parse(context, source, type, topLevel, optimize, EnumSet.noneOf(AbstractParser.Flags.class), argumentNames, futureFeatures);
     }
 
-    public RootCallTarget parse(PythonContext context, Source source, InputType type, boolean topLevel, int optimize, boolean interactiveTerminal, boolean allowIncompleteInput,
+    public RootCallTarget parse(PythonContext context, Source source, InputType type, boolean topLevel, int optimize, EnumSet<AbstractParser.Flags> parserFlags,
                     List<String> argumentNames, EnumSet<FutureFeature> futureFeatures) {
         ParserCallbacksImpl errorCb = new ParserCallbacksImpl(source, PythonOptions.isPExceptionWithJavaStacktrace(this));
         try {
             if (context.getEnv().getOptions().get(PythonOptions.ParserLogFiles)) {
                 LOGGER.log(Level.FINE, () -> "parse '" + source.getName() + "'");
             }
-            Parser parser = BytecodeDSLCompiler.createParser(source.getCharacters().toString(), errorCb, type, interactiveTerminal, allowIncompleteInput);
+            Parser parser = BytecodeDSLCompiler.createParser(source.getCharacters().toString(), errorCb, type, parserFlags, PythonLanguage.MINOR);
             ModTy mod = (ModTy) parser.parse();
             assert mod != null;
             return compileModule(context, mod, source, topLevel, optimize, argumentNames, errorCb, futureFeatures);
@@ -741,7 +743,7 @@ public final class PythonLanguage extends TruffleLanguage<PythonContext> {
     @Override
     public ExecutableNode parse(InlineParsingRequest request) {
         PythonContext context = PythonContext.get(null);
-        RootCallTarget callTarget = parse(context, request.getSource(), InputType.EVAL, false, 0, false, null, EnumSet.noneOf(FutureFeature.class));
+        RootCallTarget callTarget = parse(context, request.getSource(), InputType.EVAL, false, 0, null, EnumSet.noneOf(FutureFeature.class));
         return new ExecutableNode(this) {
             @Child private GilNode gilNode = GilNode.create();
             @Child private CallDispatchers.SimpleIndirectInvokeNode invokeNode = CallDispatchers.SimpleIndirectInvokeNode.create();
@@ -751,7 +753,7 @@ public final class PythonLanguage extends TruffleLanguage<PythonContext> {
             @Override
             public Object execute(VirtualFrame frame) {
                 Object[] arguments = PArguments.create();
-                PFrame pFrame = materializeFrameNode.execute(this, false, true, frame);
+                PFrame pFrame = materializeFrameNode.execute(this, false, CallerFlags.NEEDS_LOCALS, frame);
                 Object pLocals = getFrameLocalsNode.executeCached(frame, pFrame, true);
                 PArguments.setSpecialArgument(arguments, pLocals);
                 PArguments.setCodeObject(arguments, PFactory.createCode(getLanguage(PythonLanguage.class), callTarget));
@@ -1182,8 +1184,8 @@ public final class PythonLanguage extends TruffleLanguage<PythonContext> {
     }
 
     public <T extends RootNode> T createCachedRootNode(Function<PythonLanguage, T> rootNodeFunction, Class<? extends Node> key) {
-        assert RootNode.class.isAssignableFrom(key) || key.getConstructors().length <= 1;
-        assert RootNode.class.isAssignableFrom(key) || key.getConstructors().length == 0 || key.getConstructors()[0].getParameterCount() == 0;
+        assert !PythonOptions.detailedAssertionsEnabled() || RootNode.class.isAssignableFrom(key) || key.getConstructors().length <= 1;
+        assert !PythonOptions.detailedAssertionsEnabled() || RootNode.class.isAssignableFrom(key) || key.getConstructors().length == 0 || key.getConstructors()[0].getParameterCount() == 0;
         return createCachedRootNodeUnsafe(rootNodeFunction, key, true);
     }
 
@@ -1218,12 +1220,12 @@ public final class PythonLanguage extends TruffleLanguage<PythonContext> {
     }
 
     public <T extends RootNode> T createCachedExternalFunWrapperRootNode(Function<PythonLanguage, T> rootNodeFunction,
-                    Class<? extends RootNode> klass, Enum<?> signature, TruffleString name,
+                    Class<? extends Node> klass, Enum<?> signature, TruffleString name,
                     boolean doArgumentAndResultConversion, boolean isStatic) {
         return createCachedRootNodeUnsafe(rootNodeFunction, true, klass, signature, name, doArgumentAndResultConversion, isStatic);
     }
 
-    public <T extends RootNode> T createStructSeqIndexedMemberAccessCachedRootNode(Function<PythonLanguage, T> rootNodeFunction, int memberIndex) {
+    public BuiltinFunctionRootNode createStructSeqIndexedMemberAccessCachedRootNode(Function<PythonLanguage, BuiltinFunctionRootNode> rootNodeFunction, int memberIndex) {
         return createCachedRootNodeUnsafe(rootNodeFunction, true, StructSequence.class, memberIndex);
     }
 

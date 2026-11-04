@@ -108,6 +108,10 @@ import com.oracle.graal.python.builtins.objects.contextvars.PContextIterator;
 import com.oracle.graal.python.builtins.objects.contextvars.PContextVar;
 import com.oracle.graal.python.builtins.objects.contextvars.PContextVarsContext;
 import com.oracle.graal.python.builtins.objects.contextvars.PContextVarsToken;
+import com.oracle.graal.python.builtins.objects.decimal.PDecimal;
+import com.oracle.graal.python.builtins.objects.decimal.PDecimalContext;
+import com.oracle.graal.python.builtins.objects.decimal.PDecimalContextManager;
+import com.oracle.graal.python.builtins.objects.decimal.PDecimalSignalDict;
 import com.oracle.graal.python.builtins.objects.deque.PDeque;
 import com.oracle.graal.python.builtins.objects.deque.PDequeIter;
 import com.oracle.graal.python.builtins.objects.dict.PDefaultDict;
@@ -235,9 +239,9 @@ import com.oracle.graal.python.builtins.objects.typing.PTypeAliasType;
 import com.oracle.graal.python.builtins.objects.typing.PTypeVar;
 import com.oracle.graal.python.builtins.objects.typing.PTypeVarTuple;
 import com.oracle.graal.python.lib.PyTupleCheckNode;
-import com.oracle.graal.python.nodes.PRootNode;
 import com.oracle.graal.python.nodes.bytecode_dsl.BytecodeDSLCodeUnit;
 import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode;
+import com.oracle.graal.python.nodes.function.BuiltinFunctionRootNode;
 import com.oracle.graal.python.runtime.NativeZlibSupport;
 import com.oracle.graal.python.runtime.PythonContext;
 import com.oracle.graal.python.runtime.sequence.storage.ByteSequenceStorage;
@@ -260,7 +264,6 @@ import com.oracle.truffle.api.bytecode.BytecodeNode;
 import com.oracle.truffle.api.bytecode.ContinuationRootNode;
 import com.oracle.truffle.api.frame.MaterializedFrame;
 import com.oracle.truffle.api.nodes.Node;
-import com.oracle.truffle.api.nodes.RootNode;
 import com.oracle.truffle.api.object.Shape;
 import com.oracle.truffle.api.strings.TruffleString;
 import com.oracle.truffle.tools.profiler.CPUSampler;
@@ -388,6 +391,50 @@ public final class PFactory {
 
     public static PTupleGetter createTupleGetter(Object cls, Shape shape, int index, Object doc) {
         return new PTupleGetter(cls, shape, index, doc);
+    }
+
+    public static PDecimal createDecimal(PythonLanguage language, long value) {
+        return createDecimal(PythonBuiltinClassType.PDecimal, PythonBuiltinClassType.PDecimal.getInstanceShape(language), value);
+    }
+
+    public static PDecimal createDecimal(Object cls, Shape shape, long value) {
+        return new PDecimal(cls, shape, value);
+    }
+
+    public static PDecimal createDecimal(PythonLanguage language, boolean negative, long coefficient, long exponent, PDecimal.Kind kind) {
+        return createDecimal(PythonBuiltinClassType.PDecimal, PythonBuiltinClassType.PDecimal.getInstanceShape(language), negative, coefficient, exponent, kind);
+    }
+
+    public static PDecimal createDecimal(Object cls, Shape shape, boolean negative, long coefficient, long exponent, PDecimal.Kind kind) {
+        return new PDecimal(cls, shape, negative, coefficient, exponent, kind);
+    }
+
+    public static PDecimal createDecimal(PythonLanguage language, boolean negative, BigInteger coefficient, long exponent, PDecimal.Kind kind) {
+        return createDecimal(PythonBuiltinClassType.PDecimal, PythonBuiltinClassType.PDecimal.getInstanceShape(language), negative, coefficient, exponent, kind);
+    }
+
+    public static PDecimal createDecimal(Object cls, Shape shape, boolean negative, BigInteger coefficient, long exponent, PDecimal.Kind kind) {
+        return new PDecimal(cls, shape, negative, coefficient, exponent, kind);
+    }
+
+    public static PDecimal createDecimal(PythonLanguage language, PDecimal value) {
+        return createDecimal(PythonBuiltinClassType.PDecimal, PythonBuiltinClassType.PDecimal.getInstanceShape(language), value);
+    }
+
+    public static PDecimal createDecimal(Object cls, Shape shape, PDecimal value) {
+        return new PDecimal(cls, shape, value);
+    }
+
+    public static PDecimalContext createDecimalContext(Object cls, Shape shape) {
+        return new PDecimalContext(cls, shape);
+    }
+
+    public static PDecimalSignalDict createDecimalSignalDict(Object cls, Shape shape, PDecimalContext context, boolean traps) {
+        return new PDecimalSignalDict(cls, shape, context, traps);
+    }
+
+    public static PDecimalContextManager createDecimalContextManager(PythonLanguage language, PDecimalContext outer, PDecimalContext local) {
+        return new PDecimalContextManager(PythonBuiltinClassType.PDecimalContextManager, PythonBuiltinClassType.PDecimalContextManager.getInstanceShape(language), outer, local);
     }
 
     public static PComplex createComplex(Object cls, Shape shape, double real, double imag) {
@@ -518,29 +565,29 @@ public final class PFactory {
         return new PFunction(language, name, qualname, code, globals, defaultValues, kwDefaultValues, closure, codeStableAssumption);
     }
 
-    public static PBuiltinFunction createBuiltinFunction(PythonLanguage language, TruffleString name, Object type, int numDefaults, int flags, PRootNode rootNode) {
+    public static PBuiltinFunction createBuiltinFunction(PythonLanguage language, TruffleString name, Object type, int numDefaults, int flags, BuiltinFunctionRootNode rootNode) {
         return new PBuiltinFunction(PythonBuiltinClassType.PBuiltinFunction, PythonBuiltinClassType.PBuiltinFunction.getInstanceShape(language), name, type,
                         PBuiltinFunction.generateDefaults(numDefaults), null, flags, rootNode, rootNode.getSignature(), null, null);
     }
 
-    public static PBuiltinFunction createBuiltinFunction(PythonLanguage language, TruffleString name, Object type, Object[] defaults, PKeyword[] kw, int flags, PRootNode rootNode) {
+    public static PBuiltinFunction createBuiltinFunction(PythonLanguage language, TruffleString name, Object type, Object[] defaults, PKeyword[] kw, int flags, BuiltinFunctionRootNode rootNode) {
         return new PBuiltinFunction(PythonBuiltinClassType.PBuiltinFunction, PythonBuiltinClassType.PBuiltinFunction.getInstanceShape(language), name, type, defaults, kw, flags, rootNode,
                         rootNode.getSignature(), null, null);
     }
 
-    public static PBuiltinFunction createWrapperDescriptor(PythonLanguage language, TruffleString name, Object type, int numDefaults, int flags, PRootNode rootNode, TpSlot slot,
+    public static PBuiltinFunction createWrapperDescriptor(PythonLanguage language, TruffleString name, Object type, int numDefaults, int flags, BuiltinFunctionRootNode rootNode, TpSlot slot,
                     PExternalFunctionWrapper slotWrapper) {
         return new PBuiltinFunction(PythonBuiltinClassType.WrapperDescriptor, PythonBuiltinClassType.WrapperDescriptor.getInstanceShape(language), name, type,
                         PBuiltinFunction.generateDefaults(numDefaults), null, flags, rootNode, rootNode.getSignature(), slot, slotWrapper);
     }
 
-    public static PBuiltinFunction createWrapperDescriptor(PythonLanguage language, TruffleString name, Object type, Object[] defaults, PKeyword[] kw, int flags, PRootNode rootNode,
+    public static PBuiltinFunction createWrapperDescriptor(PythonLanguage language, TruffleString name, Object type, Object[] defaults, PKeyword[] kw, int flags, BuiltinFunctionRootNode rootNode,
                     TpSlot slot, PExternalFunctionWrapper slotWrapper) {
         return new PBuiltinFunction(PythonBuiltinClassType.WrapperDescriptor, PythonBuiltinClassType.WrapperDescriptor.getInstanceShape(language), name, type, defaults, kw, flags,
                         rootNode, rootNode.getSignature(), slot, slotWrapper);
     }
 
-    public static PBuiltinMethod createNewWrapper(PythonLanguage language, Object type, Object[] defaults, PKeyword[] kwdefaults, PRootNode rootNode, TpSlot slot) {
+    public static PBuiltinMethod createNewWrapper(PythonLanguage language, Object type, Object[] defaults, PKeyword[] kwdefaults, BuiltinFunctionRootNode rootNode, TpSlot slot) {
         PBuiltinFunction func = createWrapperDescriptor(language, T___NEW__, type, defaults, kwdefaults, PyMethodFlags.METH_VARARGS | PyMethodFlags.METH_KEYWORDS, rootNode, slot,
                         PExternalFunctionWrapper.NEW);
         return createBuiltinMethod(language, type, func);
@@ -1037,12 +1084,27 @@ public final class PFactory {
                         initialSize);
     }
 
+    public static PDictItemIterator createDictReverseItemIterator(PythonLanguage language, HashingStorageNodes.HashingStorageIterator iterator, HashingStorage hashingStorage, int initialSize) {
+        return new PDictItemIterator(PythonBuiltinClassType.PDictReverseItemIterator, PythonBuiltinClassType.PDictReverseItemIterator.getInstanceShape(language), iterator, hashingStorage,
+                        initialSize);
+    }
+
     public static PDictKeyIterator createDictKeyIterator(PythonLanguage language, HashingStorageNodes.HashingStorageIterator iterator, HashingStorage hashingStorage, int initialSize) {
         return new PDictKeyIterator(PythonBuiltinClassType.PDictKeyIterator, PythonBuiltinClassType.PDictKeyIterator.getInstanceShape(language), iterator, hashingStorage, initialSize);
     }
 
+    public static PDictKeyIterator createDictReverseKeyIterator(PythonLanguage language, HashingStorageNodes.HashingStorageIterator iterator, HashingStorage hashingStorage, int initialSize) {
+        return new PDictKeyIterator(PythonBuiltinClassType.PDictReverseKeyIterator, PythonBuiltinClassType.PDictReverseKeyIterator.getInstanceShape(language), iterator, hashingStorage,
+                        initialSize);
+    }
+
     public static PDictValueIterator createDictValueIterator(PythonLanguage language, HashingStorageNodes.HashingStorageIterator iterator, HashingStorage hashingStorage, int initialSize) {
         return new PDictValueIterator(PythonBuiltinClassType.PDictValueIterator, PythonBuiltinClassType.PDictValueIterator.getInstanceShape(language), iterator, hashingStorage, initialSize);
+    }
+
+    public static PDictValueIterator createDictReverseValueIterator(PythonLanguage language, HashingStorageNodes.HashingStorageIterator iterator, HashingStorage hashingStorage, int initialSize) {
+        return new PDictValueIterator(PythonBuiltinClassType.PDictReverseValueIterator, PythonBuiltinClassType.PDictReverseValueIterator.getInstanceShape(language), iterator, hashingStorage,
+                        initialSize);
     }
 
     public static Object createSentinelIterator(PythonLanguage language, Object callable, Object sentinel) {
@@ -1074,21 +1136,26 @@ public final class PFactory {
     }
 
     public static PCode createCode(PythonLanguage language, RootCallTarget ct, TruffleString filename) {
-        return new PCode(PythonBuiltinClassType.PCode, PythonBuiltinClassType.PCode.getInstanceShape(language), ct.getRootNode(), Signature.fromCallTarget(ct),
+        return createCode(language, (PBytecodeDSLRootNode) ct.getRootNode(), filename);
+    }
+
+    public static PCode createCode(PythonLanguage language, PBytecodeDSLRootNode rootNode, TruffleString filename) {
+        return new PCode(PythonBuiltinClassType.PCode, PythonBuiltinClassType.PCode.getInstanceShape(language), rootNode, rootNode.getSignature(),
                         -1, -1, -1, null, null, null, null, null, filename, null, null, -1, null);
     }
 
     public static PCode createCode(PythonLanguage language, RootCallTarget ct, int flags, int firstlineno, byte[] linetable, TruffleString filename) {
-        return new PCode(PythonBuiltinClassType.PCode, PythonBuiltinClassType.PCode.getInstanceShape(language), ct.getRootNode(), Signature.fromCallTarget(ct),
+        PBytecodeDSLRootNode rootNode = (PBytecodeDSLRootNode) ct.getRootNode();
+        return new PCode(PythonBuiltinClassType.PCode, PythonBuiltinClassType.PCode.getInstanceShape(language), rootNode, rootNode.getSignature(),
                         -1, -1, flags, null, null, null, null, null, filename, null, null, firstlineno, linetable);
     }
 
-    public static PCode createCode(PythonLanguage language, RootNode rootNode, Signature signature, BytecodeDSLCodeUnit codeUnit, TruffleString filename) {
+    public static PCode createCode(PythonLanguage language, PBytecodeDSLRootNode rootNode, Signature signature, BytecodeDSLCodeUnit codeUnit, TruffleString filename) {
         return new PCode(PythonBuiltinClassType.PCode, PythonBuiltinClassType.PCode.getInstanceShape(language), rootNode, signature,
                         codeUnit.varnames.length, -1, -1, null, null, null, null, null, filename, codeUnit.name, codeUnit.qualname, -1, null);
     }
 
-    public static PCode createCode(PythonLanguage language, RootNode rootNode, Signature signature, int nlocals,
+    public static PCode createCode(PythonLanguage language, PBytecodeDSLRootNode rootNode, Signature signature, int nlocals,
                     int stacksize, int flags, Object[] constants,
                     TruffleString[] names, TruffleString[] varnames,
                     TruffleString[] freevars, TruffleString[] cellvars,

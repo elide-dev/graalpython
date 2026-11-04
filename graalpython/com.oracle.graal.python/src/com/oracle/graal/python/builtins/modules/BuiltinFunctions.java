@@ -128,7 +128,6 @@ import com.oracle.graal.python.builtins.modules.io.IONodes;
 import com.oracle.graal.python.builtins.objects.PNone;
 import com.oracle.graal.python.builtins.objects.PNotImplemented;
 import com.oracle.graal.python.builtins.objects.buffer.PythonBufferAccessLibrary;
-import com.oracle.graal.python.builtins.objects.buffer.PythonBufferAcquireLibrary;
 import com.oracle.graal.python.builtins.objects.bytes.BytesNodes;
 import com.oracle.graal.python.builtins.objects.bytes.PByteArray;
 import com.oracle.graal.python.builtins.objects.bytes.PBytes;
@@ -171,6 +170,7 @@ import com.oracle.graal.python.compiler.AstOptimizer;
 import com.oracle.graal.python.compiler.ParserCallbacksImpl;
 import com.oracle.graal.python.compiler.bytecode_dsl.BytecodeDSLCompiler;
 import com.oracle.graal.python.lib.IteratorExhausted;
+import com.oracle.graal.python.lib.PyBufferRelease;
 import com.oracle.graal.python.lib.PyBytesCheckNode;
 import com.oracle.graal.python.lib.PyCallableCheckNode;
 import com.oracle.graal.python.lib.PyEvalGetGlobals;
@@ -191,9 +191,10 @@ import com.oracle.graal.python.lib.PyObjectCallMethodObjArgs;
 import com.oracle.graal.python.lib.PyObjectDir;
 import com.oracle.graal.python.lib.PyObjectFormat;
 import com.oracle.graal.python.lib.PyObjectGetAIter;
-import com.oracle.graal.python.lib.PyObjectGetAttr;
 import com.oracle.graal.python.lib.PyObjectGetAttrO;
+import com.oracle.graal.python.lib.PyObjectGetBuffer;
 import com.oracle.graal.python.lib.PyObjectGetIter;
+import com.oracle.graal.python.lib.PyObjectGetMethod;
 import com.oracle.graal.python.lib.PyObjectHashNode;
 import com.oracle.graal.python.lib.PyObjectIsInstanceNode;
 import com.oracle.graal.python.lib.PyObjectIsSubclassNode;
@@ -232,6 +233,7 @@ import com.oracle.graal.python.nodes.builtins.ListNodes.ConstructListNode;
 import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode;
 import com.oracle.graal.python.nodes.call.CallDispatchers;
 import com.oracle.graal.python.nodes.call.CallNode;
+import com.oracle.graal.python.nodes.call.special.CallBinaryMethodNode;
 import com.oracle.graal.python.nodes.call.special.CallUnaryMethodNode;
 import com.oracle.graal.python.nodes.call.special.LookupAndCallBinaryNode;
 import com.oracle.graal.python.nodes.call.special.LookupAndCallUnaryNode;
@@ -268,7 +270,6 @@ import com.oracle.graal.python.runtime.CallerFlags;
 import com.oracle.graal.python.runtime.ExecutionContext.BoundaryCallContext;
 import com.oracle.graal.python.runtime.GilNode;
 import com.oracle.graal.python.runtime.IndirectCallData.BoundaryCallData;
-import com.oracle.graal.python.runtime.IndirectCallData.InteropCallData;
 import com.oracle.graal.python.runtime.PythonContext;
 import com.oracle.graal.python.runtime.PythonOptions;
 import com.oracle.graal.python.runtime.exception.PException;
@@ -283,7 +284,6 @@ import com.oracle.graal.python.util.PythonUtils;
 import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.CompilerAsserts;
 import com.oracle.truffle.api.CompilerDirectives;
-import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.HostCompilerDirectives.InliningCutoff;
 import com.oracle.truffle.api.RootCallTarget;
@@ -1011,15 +1011,20 @@ public final class BuiltinFunctions extends PythonBuiltins {
         Object compile(TruffleString expression, TruffleString filename, TruffleString mode, int flags, @SuppressWarnings("unused") boolean dontInherit, int optimize, int featureVersion) {
             checkFlags(flags);
             checkOptimize(optimize, optimize);
+            InputType type = getParserInputType(mode, flags);
             checkSource(expression);
 
             TruffleString code = expression;
             PythonContext context = getContext();
-            InputType type = getParserInputType(mode, flags);
-            if (type == InputType.FUNCTION_TYPE) {
-                if ((flags & PyCF_ONLY_AST) == 0) {
-                    throw PRaiseNode.raiseStatic(this, ValueError, ErrorMessages.COMPILE_MODE_FUNC_TYPE_REQUIED_FLAG_ONLY_AST);
-                }
+            EnumSet<AbstractParser.Flags> parserFlags = EnumSet.noneOf(AbstractParser.Flags.class);
+            if ((flags & PyCF_TYPE_COMMENTS) != 0) {
+                parserFlags.add(AbstractParser.Flags.TYPE_COMMENTS);
+            }
+            if ((flags & PyCF_ALLOW_INCOMPLETE_INPUT) != 0) {
+                parserFlags.add(AbstractParser.Flags.ALLOW_INCOMPLETE_INPUT);
+            }
+            if ((flags & PyCF_DONT_IMPLY_DEDENT) != 0) {
+                parserFlags.add(AbstractParser.Flags.DONT_IMPLY_DEDENT);
             }
             if (lstrip && !code.isEmpty()) {
                 int c = code.codePointAtIndexUncached(0, TS_ENCODING);
@@ -1031,20 +1036,16 @@ public final class BuiltinFunctions extends PythonBuiltins {
                 Source source = PythonLanguage.newSource(context, code, filename, mayBeFromFile, InputType.FILE, optimize, flags);
                 ParserCallbacksImpl parserCb = new ParserCallbacksImpl(source, PythonOptions.isPExceptionWithJavaStacktrace(getLanguage()));
 
-                EnumSet<AbstractParser.Flags> compilerFlags = EnumSet.noneOf(AbstractParser.Flags.class);
-                if ((flags & PyCF_TYPE_COMMENTS) != 0) {
-                    compilerFlags.add(AbstractParser.Flags.TYPE_COMMENTS);
-                }
                 if (featureVersion < 0) {
                     featureVersion = PythonLanguage.MINOR;
                 }
                 if (featureVersion < 7) {
-                    compilerFlags.add(AbstractParser.Flags.ASYNC_HACKS);
+                    parserFlags.add(AbstractParser.Flags.ASYNC_HACKS);
                 }
                 if (context.getEnv().getOptions().get(PythonOptions.ParserLogFiles)) {
                     PythonLanguage.LOGGER.log(Level.FINE, () -> "parse '" + source.getName() + "'");
                 }
-                Parser parser = BytecodeDSLCompiler.createParser(code.toJavaStringUncached(), parserCb, type, compilerFlags, featureVersion);
+                Parser parser = BytecodeDSLCompiler.createParser(code.toJavaStringUncached(), parserCb, type, parserFlags, featureVersion);
                 ModTy mod = (ModTy) parser.parse();
                 parserCb.triggerDeprecationWarnings();
                 int astOptimizationLevel = (flags & PyCF_OPTIMIZED_AST) == PyCF_OPTIMIZED_AST ? resolveOptimizeLevel(context, optimize) : -2;
@@ -1058,8 +1059,7 @@ public final class BuiltinFunctions extends PythonBuiltins {
             if (type != InputType.SINGLE) {
                 ct = context.getEnv().parsePublic(source);
             } else {
-                boolean allowIncomplete = (flags & PyCF_ALLOW_INCOMPLETE_INPUT) != 0;
-                ct = context.getLanguage().parse(context, source, InputType.SINGLE, false, optimize, false, allowIncomplete, null, FutureFeature.fromFlags(flags));
+                ct = context.getLanguage().parse(context, source, InputType.SINGLE, false, optimize, parserFlags, null, FutureFeature.fromFlags(flags));
             }
             return wrapRootCallTarget((RootCallTarget) ct, filename);
         }
@@ -1067,7 +1067,7 @@ public final class BuiltinFunctions extends PythonBuiltins {
         @Specialization(limit = "3")
         @SuppressWarnings("truffle-static-method")
         Object generic(VirtualFrame frame, Object wSource, Object wFilename, TruffleString mode, int flags, boolean dontInherit, int optimize, int featureVersion,
-                        @CachedLibrary(limit = "3") PythonBufferAcquireLibrary acquireLib,
+                        @Cached PyObjectGetBuffer getBuffer,
                         @CachedLibrary(limit = "3") PythonBufferAccessLibrary bufferLib,
                         @Bind PythonContext context,
                         @Bind Node inliningTarget,
@@ -1087,11 +1087,12 @@ public final class BuiltinFunctions extends PythonBuiltins {
             }
             checkFlags(flags);
             checkOptimize(optimize, optimize);
+            InputType type = getParserInputType(mode, flags);
 
             Object saved = BoundaryCallContext.enter(frame, boundaryCallData);
             try {
                 if (AstModuleBuiltins.isAst(context, wSource)) {
-                    ModTy mod = AstModuleBuiltins.obj2sst(inliningTarget, context, wSource, getParserInputType(mode, flags));
+                    ModTy mod = AstModuleBuiltins.obj2sst(inliningTarget, context, wSource, type);
                     if ((flags & PyCF_ONLY_AST) != 0) {
                         if ((flags & PyCF_OPTIMIZED_AST) != PyCF_OPTIMIZED_AST) {
                             return wSource;
@@ -1103,7 +1104,7 @@ public final class BuiltinFunctions extends PythonBuiltins {
                     RootCallTarget rootCallTarget = context.getLanguage(inliningTarget).compileModule(context, mod, source, false, optimize, null, null, flags);
                     return wrapRootCallTarget(rootCallTarget, filename);
                 }
-                TruffleString source = sourceAsString(frame, inliningTarget, wSource, filename, interopLib, acquireLib, bufferLib, switchEncodingNode, raiseNode);
+                TruffleString source = sourceAsString(frame, inliningTarget, wSource, filename, interopLib, getBuffer, bufferLib, switchEncodingNode, raiseNode);
                 checkSource(source);
                 return compile(source, filename, mode, flags, dontInherit, optimize, featureVersion);
             } finally {
@@ -1143,7 +1144,7 @@ public final class BuiltinFunctions extends PythonBuiltins {
         @TruffleBoundary
         private void checkFlags(int flags) {
             if ((flags & ~(PyCF_MASK | PyCF_MASK_OBSOLETE | PyCF_COMPILE_MASK)) != 0) {
-                throw PRaiseNode.raiseStatic(this, ValueError, null, NO_VALUE, ErrorMessages.UNRECOGNIZED_FLAGS, PythonUtils.EMPTY_OBJECT_ARRAY);
+                throw PRaiseNode.raiseStatic(this, ValueError, ErrorMessages.UNRECOGNIZED_FLAGS);
             }
         }
 
@@ -1156,6 +1157,9 @@ public final class BuiltinFunctions extends PythonBuiltins {
             } else if (mode.equalsUncached(StringLiterals.T_SINGLE, TS_ENCODING)) {
                 return InputType.SINGLE;
             } else if (mode.equalsUncached(StringLiterals.T_FUNC_TYPE, TS_ENCODING)) {
+                if ((flags & PyCF_ONLY_AST) == 0) {
+                    throw PRaiseNode.raiseStatic(this, ValueError, ErrorMessages.COMPILE_MODE_FUNC_TYPE_REQUIED_FLAG_ONLY_AST);
+                }
                 return InputType.FUNCTION_TYPE;
             } else {
                 if ((flags & PyCF_ONLY_AST) != 0) {
@@ -1167,7 +1171,7 @@ public final class BuiltinFunctions extends PythonBuiltins {
         }
 
         // modeled after _Py_SourceAsString
-        TruffleString sourceAsString(VirtualFrame frame, Node inliningTarget, Object source, TruffleString filename, InteropLibrary interopLib, PythonBufferAcquireLibrary acquireLib,
+        TruffleString sourceAsString(VirtualFrame frame, Node inliningTarget, Object source, TruffleString filename, InteropLibrary interopLib, PyObjectGetBuffer getBuffer,
                         PythonBufferAccessLibrary bufferLib, TruffleString.SwitchEncodingNode switchEncodingNode, PRaiseNode raiseNode) {
             if (interopLib.isString(source)) {
                 try {
@@ -1180,7 +1184,7 @@ public final class BuiltinFunctions extends PythonBuiltins {
                 // buffers, since that's fast for us anyway
                 Object buffer;
                 try {
-                    buffer = acquireLib.acquireReadonly(source, frame, InteropCallData.getUncached());
+                    buffer = getBuffer.executeReadonly(frame, source);
                 } catch (PException e) {
                     throw raiseNode.raise(inliningTarget, TypeError, ErrorMessages.ARG_D_MUST_BE_S, "compile()", 1, "string, bytes or AST object");
                 }
@@ -1189,7 +1193,7 @@ public final class BuiltinFunctions extends PythonBuiltins {
                     int bytesLen = bufferLib.getBufferLength(source);
                     return doDecodeSource(getContext(), source, filename, bytes, bytesLen);
                 } finally {
-                    bufferLib.release(buffer, frame, InteropCallData.getUncached());
+                    PyBufferRelease.getUncached().execute(frame, buffer);
                 }
             }
         }
@@ -1575,14 +1579,13 @@ public final class BuiltinFunctions extends PythonBuiltins {
     @GenerateNodeFactory
     public abstract static class PrintNode extends PythonBuiltinNode {
         @Child private ReadAttributeFromModuleNode readStdout;
-        @CompilationFinal private PythonModule cachedSys;
 
         @Specialization
         @SuppressWarnings("unused")
         PNone printNoKeywords(VirtualFrame frame, Object[] values, PNone sep, PNone end, PNone file, PNone flush,
                         @Bind Node inliningTarget,
-                        @Shared("getWriteMethod") @Cached PyObjectGetAttr getWriteMethod,
-                        @Shared("callWrite") @Cached CallNode callWrite,
+                        @Shared("getWriteMethod") @Cached PyObjectGetMethod getWriteMethod,
+                        @Shared("callWrite") @Cached CallBinaryMethodNode callWrite,
                         @Shared("callFlush") @Cached PyObjectCallMethodObjArgs callFlush,
                         @Shared("strNode") @Cached PyObjectStrAsObjectNode strNode) {
             Object stdout = getStdout();
@@ -1596,23 +1599,22 @@ public final class BuiltinFunctions extends PythonBuiltins {
         @Specialization(guards = {"!isNone(file)", "!isNoValue(file)"})
         static PNone printAllGiven(VirtualFrame frame, Object[] values, TruffleString sep, TruffleString end, Object file, boolean flush,
                         @Bind Node inliningTarget,
-                        @Shared("getWriteMethod") @Cached PyObjectGetAttr getWriteMethod,
-                        @Shared("callWrite") @Cached CallNode callWrite,
+                        @Shared("getWriteMethod") @Cached PyObjectGetMethod getWriteMethod,
+                        @Shared("callWrite") @Cached CallBinaryMethodNode callWrite,
                         @Shared("callFlush") @Cached PyObjectCallMethodObjArgs callFlush,
                         @Shared("strNode") @Cached PyObjectStrAsObjectNode strNode) {
             int lastValue = values.length - 1;
-            // Note: the separate lookup is necessary due to different __getattr__ treatment than
-            // method lookup
+            // Resolve write once, before converting the values to strings.
             Object writeMethod = getWriteMethod.execute(frame, inliningTarget, file, T_WRITE);
             for (int i = 0; i < lastValue; i++) {
-                callWrite.execute(frame, writeMethod, strNode.execute(frame, inliningTarget, values[i]));
-                callWrite.execute(frame, writeMethod, sep);
+                callWrite.executeObject(frame, writeMethod, file, strNode.execute(frame, inliningTarget, values[i]));
+                callWrite.executeObject(frame, writeMethod, file, sep);
             }
             LoopNode.reportLoopCount(inliningTarget, values.length == 0 ? 0 : values.length - 1);
             if (lastValue >= 0) {
-                callWrite.execute(frame, writeMethod, strNode.execute(frame, inliningTarget, values[lastValue]));
+                callWrite.executeObject(frame, writeMethod, file, strNode.execute(frame, inliningTarget, values[lastValue]));
             }
-            callWrite.execute(frame, writeMethod, end);
+            callWrite.executeObject(frame, writeMethod, file, end);
             if (flush) {
                 callFlush.execute(frame, inliningTarget, file, T_FLUSH);
             }
@@ -1626,8 +1628,8 @@ public final class BuiltinFunctions extends PythonBuiltins {
                         @Cached CastToTruffleStringNode castSep,
                         @Cached CastToTruffleStringNode castEnd,
                         @Cached PyObjectIsTrueNode castFlush,
-                        @Exclusive @Cached PyObjectGetAttr getWriteMethod,
-                        @Exclusive @Cached CallNode callWrite,
+                        @Exclusive @Cached PyObjectGetMethod getWriteMethod,
+                        @Exclusive @Cached CallBinaryMethodNode callWrite,
                         @Exclusive @Cached PyObjectCallMethodObjArgs callFlush,
                         @Exclusive @Cached PyObjectStrAsObjectNode strNode,
                         @Cached PRaiseNode raiseNode) {
@@ -1665,20 +1667,7 @@ public final class BuiltinFunctions extends PythonBuiltins {
         }
 
         private Object getStdout() {
-            PythonModule sys;
-            if (getLanguage().isSingleContext()) {
-                if (cachedSys == null) {
-                    CompilerDirectives.transferToInterpreterAndInvalidate();
-                    cachedSys = getContext().lookupBuiltinModule(T_SYS);
-                }
-                sys = cachedSys;
-            } else {
-                if (cachedSys != null) {
-                    CompilerDirectives.transferToInterpreterAndInvalidate();
-                    cachedSys = null;
-                }
-                sys = getContext().lookupBuiltinModule(T_SYS);
-            }
+            PythonModule sys = getContext().getSysModule();
             if (readStdout == null) {
                 CompilerDirectives.transferToInterpreterAndInvalidate();
                 readStdout = insert(ReadAttributeFromModuleNode.create());

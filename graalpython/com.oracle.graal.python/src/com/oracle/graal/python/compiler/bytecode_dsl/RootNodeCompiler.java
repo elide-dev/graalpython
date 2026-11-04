@@ -64,10 +64,9 @@ import static com.oracle.graal.python.nodes.SpecialAttributeNames.J___CLASS__;
 import static com.oracle.graal.python.nodes.SpecialAttributeNames.J___FIRSTLINENO__;
 import static com.oracle.graal.python.nodes.SpecialAttributeNames.J___STATIC_ATTRIBUTES__;
 import static com.oracle.graal.python.nodes.SpecialAttributeNames.J___TYPE_PARAMS__;
-import static com.oracle.graal.python.util.PythonUtils.codePointsToInternedTruffleString;
 import static com.oracle.graal.python.util.PythonUtils.codePointsToTruffleString;
+import static com.oracle.graal.python.util.PythonUtils.shouldInternConstant;
 import static com.oracle.graal.python.util.PythonUtils.toInternedTruffleStringUncached;
-import static com.oracle.graal.python.util.PythonUtils.toTruffleStringUncached;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
@@ -153,6 +152,7 @@ import com.oracle.graal.python.pegparser.sst.TypeParamTy.TypeVarTuple;
 import com.oracle.graal.python.pegparser.sst.UnaryOpTy;
 import com.oracle.graal.python.pegparser.sst.WithItemTy;
 import com.oracle.graal.python.pegparser.tokenizer.SourceRange;
+import com.oracle.graal.python.runtime.PythonOptions;
 import com.oracle.graal.python.util.PythonUtils;
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.bytecode.BytecodeConfig;
@@ -230,6 +230,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
     private final Map<String, BytecodeLocal> freeLocals = new HashMap<>();
     private final HashMap<Object, Integer> constants = new HashMap<>();
     private final HashMap<String, Integer> names = new HashMap<>();
+    private final ArrayList<TruffleString> namesInterned = new ArrayList<>();
     private final Set<String> staticAttributes;
 
     /**
@@ -445,7 +446,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
                 constants.add(value.getDouble());
             } else if (value.kind == ConstantValue.Kind.CODEPOINTS) {
                 constantType = determineConstantType(constantType, CollectionType.OBJECT);
-                constants.add(codePointsToInternedTruffleString(value.getCodePoints()));
+                constants.add(internConstant(codePointsToTruffleString(value.getCodePoints())));
             } else if (value.kind == ConstantValue.Kind.NONE) {
                 constantType = determineConstantType(constantType, CollectionType.OBJECT);
                 constants.add(PNone.NONE);
@@ -581,7 +582,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
             SourceRange sourceRange = getRootSourceRange(node);
             codeUnit = new BytecodeDSLCodeUnit(toInternedTruffleStringUncached(name), toInternedTruffleStringUncached(qualName),
                             argumentInfo.argCount, argumentInfo.kwOnlyArgCount, argumentInfo.positionalOnlyArgCount,
-                            flags, orderedTruffleStringArray(names),
+                            flags, namesInterned.toArray(PythonUtils.EMPTY_TRUFFLESTRING_ARRAY),
                             orderedTruffleStringArray(varnames),
                             orderedTruffleStringArray(cellvars),
                             orderedTruffleStringArray(freevars),
@@ -759,7 +760,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
     private void visitParamAnnotation(List<ParamAnnotation> result, String name, ExprTy annotation) {
         if (annotation != null) {
             String mangled = mangle(name);
-            result.add(new ParamAnnotation(toTruffleStringUncached(mangled), annotation));
+            result.add(new ParamAnnotation(toInternedTruffleStringUncached(mangled), annotation));
         }
     }
 
@@ -775,7 +776,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
         lastTracedLine = -1;
         this.inExceptStar = false;
         temporaryLocals.clear();
-        if (ASSERTIONS_ENABLED) {
+        if (TEMP_LOCAL_TRACKING_ENABLED) {
             temporaryLocalsTraces.clear();
         }
     }
@@ -808,7 +809,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
         b.endRoot();
         endSourceSection(b);
         b.endSource();
-        if (ASSERTIONS_ENABLED && !temporaryLocalsTraces.isEmpty()) {
+        if (TEMP_LOCAL_TRACKING_ENABLED && !temporaryLocalsTraces.isEmpty()) {
             throw new AssertionError(this.qualName + "\n\n" + formatTempLocalsStackTraces());
         }
     }
@@ -828,24 +829,17 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
         return sb.toString();
     }
 
-    private static final boolean ASSERTIONS_ENABLED = assertionsEnabled();
+    private static final boolean TEMP_LOCAL_TRACKING_ENABLED = PythonOptions.detailedAssertionsEnabled();
     private static final boolean TRACK_TEMP_LOCALS = Boolean.getBoolean("org.graalvm.python.trackTempLocals");
 
-    @SuppressWarnings("all")
-    private static boolean assertionsEnabled() {
-        boolean enabled = false;
-        assert (enabled = true) == true;
-        return enabled;
-    }
-
-    private HashMap<BytecodeLocal, Object> temporaryLocalsTraces = ASSERTIONS_ENABLED ? new HashMap<>() : null;
+    private HashMap<BytecodeLocal, Object> temporaryLocalsTraces = TEMP_LOCAL_TRACKING_ENABLED ? new HashMap<>() : null;
     private HashSet<BytecodeLocal> temporaryLocals = new HashSet<>();
 
     private BytecodeLocal beginTemporaryLocal(Builder b) {
         BytecodeLocal local = b.createLocal();
         temporaryLocals.add(local);
         assert isTemporaryLocal(local);
-        if (ASSERTIONS_ENABLED) {
+        if (TEMP_LOCAL_TRACKING_ENABLED) {
             Object previous = temporaryLocalsTraces.put(local, TRACK_TEMP_LOCALS ? new RuntimeException() : local);
             if (previous != null) {
                 throw new AssertionError();
@@ -886,7 +880,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
         if (!temporaryLocals.remove(local)) {
             throw new AssertionError();
         }
-        if (ASSERTIONS_ENABLED) {
+        if (TEMP_LOCAL_TRACKING_ENABLED) {
             if (temporaryLocalsTraces.remove(local) == null) {
                 throw new AssertionError();
             }
@@ -1007,7 +1001,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
         return ctx.maybeMangle(this.privateName, scope, name);
     }
 
-    String maybeMangleAndAddName(String name) {
+    TruffleString maybeMangleAndAddName(String name) {
         String mangled = ctx.maybeMangle(this.privateName, scope, name);
         return addName(mangled);
     }
@@ -1121,7 +1115,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
             if (stmt instanceof StmtTy.Expr expr //
                             && expr.value instanceof ExprTy.Constant constant //
                             && constant.value.kind == ConstantValue.Kind.CODEPOINTS) {
-                return codePointsToTruffleString(constant.value.getCodePoints());
+                return internConstant(codePointsToTruffleString(constant.value.getCodePoints()));
             }
         }
         return null;
@@ -1291,7 +1285,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
             endStoreLocal("__module__", b);
 
             beginStoreLocal("__qualname__", b);
-            emitPythonConstant(toTruffleStringUncached(this.qualName), b);
+            emitPythonConstant(toInternedTruffleStringUncached(this.qualName), b);
             endStoreLocal("__qualname__", b);
 
             beginStoreLocal(J___FIRSTLINENO__, b);
@@ -1339,7 +1333,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
             String[] attributes = staticAttributes.toArray(String[]::new);
             Arrays.sort(attributes);
             for (String attribute : attributes) {
-                emitPythonConstant(toTruffleStringUncached(attribute), b);
+                emitPythonConstant(toInternedTruffleStringUncached(attribute), b);
             }
             b.endMakeTuple();
             endStoreLocal(J___STATIC_ATTRIBUTES__, b);
@@ -1634,7 +1628,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
         return ctx.mangle(scope, name);
     }
 
-    private String mangleAndAddName(String name) {
+    private TruffleString mangleAndAddName(String name) {
         String mangled = ctx.mangle(scope, name);
         return addName(mangled);
     }
@@ -1644,6 +1638,12 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
      */
     private void emitPythonConstant(Object constant, Builder b) {
         b.emitLoadConstant(addConstant(constant));
+    }
+
+    private static TruffleString internConstant(TruffleString string) {
+        // Bytecode DSL deduplicates constants by value. Eligible constants must already be
+        // canonical before they can displace an equal name operand in the constant pool.
+        return shouldInternConstant(string) ? PythonUtils.internString(string) : string;
     }
 
     private boolean inTopMostSaveExceptionBlock() {
@@ -1692,13 +1692,11 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
     }
 
     private void beginSetAttribute(String name, Builder b) {
-        String mangled = maybeMangleAndAddName(name);
-        b.beginSetAttribute(toTruffleStringUncached(mangled));
+        b.beginSetAttribute(maybeMangleAndAddName(name));
     }
 
     private void beginGetAttribute(String name, Builder b) {
-        String mangled = maybeMangleAndAddName(name);
-        b.beginGetAttribute(toTruffleStringUncached(mangled));
+        b.beginGetAttribute(maybeMangleAndAddName(name));
     }
 
     private void emitNameCellOperation(String mangled, NameOperation op, Builder b) {
@@ -1780,8 +1778,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
 
     private void emitNameGlobalOperation(String name, NameOperation op, Builder b, boolean isImplicitScope) {
         assert locals.get(name) == null;
-        addName(name);
-        TruffleString tsName = toTruffleStringUncached(name);
+        TruffleString tsName = addName(name);
         switch (op) {
             case Read:
                 if (scope.canSeeClassScope() && isImplicitScope) {
@@ -1813,15 +1810,25 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
         }
     }
 
-    private String addName(String name) {
-        names.putIfAbsent(name, names.size());
-        return name;
+    private TruffleString addName(String name) {
+        Integer index = names.get(name);
+        return index != null ? namesInterned.get(index) : addName(name, toInternedTruffleStringUncached(name));
+    }
+
+    private TruffleString addName(String name, TruffleString interned) {
+        assert PythonUtils.isInterned(interned);
+        assert namesInterned.size() == names.size();
+        Integer index = names.putIfAbsent(name, namesInterned.size());
+        if (index != null) {
+            return namesInterned.get(index);
+        }
+        namesInterned.add(interned);
+        return interned;
     }
 
     private void emitNameSlowOperation(String name, NameOperation op, Builder b) {
         assert locals.get(name) == null;
-        addName(name);
-        TruffleString tsName = toTruffleStringUncached(name);
+        TruffleString tsName = addName(name);
         switch (op) {
             case Read:
                 b.emitReadName(tsName);
@@ -2212,12 +2219,15 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
          * The caller must own a block that keeps the returned stack values alive.
          */
         private StackValue[] emitSuperLookup(ExprTy.Call superCall, String attribute, boolean method) {
+            String mangled = maybeMangle(attribute);
+            Integer index = names.get(mangled);
+            TruffleString key = index != null ? namesInterned.get(index) : toInternedTruffleStringUncached(mangled);
             // @formatter:off
             BytecodeLocal typeArg = beginTemporaryLocal();
             BytecodeLocal valueArg = beginTemporaryLocal();
             b.beginBindStackValue();
                 // SuperGetAttribute handles the placeholder from SuperCall or a real fallback result.
-                b.beginSuperGetAttribute(toTruffleStringUncached(maybeMangleAndAddName(attribute)), method, valueArg);
+                b.beginSuperGetAttribute(key, method, valueArg);
                     enterProfileCEventCall();
                         b.beginInstrumentCallReturn();
                             // SuperCall returns a placeholder for the builtin, otherwise the real call result.
@@ -2236,6 +2246,8 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
                             b.endSuperCall();
                         b.endInstrumentCallReturn();
                     exitProfileCEventCall();
+                    // co_names must register the receiver's names before the attribute.
+                    addName(mangled, key);
                     b.emitLoadLocal(typeArg);
                     b.emitLoadLocal(valueArg);
                 b.endSuperGetAttribute();
@@ -2717,8 +2729,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
         private void emitGetMethod(ExprTy func, StackValue receiver) {
             assert isAttributeLoad(func);
             ExprTy.Attribute attrAccess = (ExprTy.Attribute) func;
-            String mangled = maybeMangle(attrAccess.attr);
-            b.beginGetMethod(toTruffleStringUncached(mangled));
+            b.beginGetMethod(maybeMangleAndAddName(attrAccess.attr));
             b.emitLoadStackValue(receiver);
             b.endGetMethod();
         }
@@ -2937,7 +2948,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
                     b.emitLoadBigInt(value.getBigInteger());
                     break;
                 case CODEPOINTS:
-                    emitPythonConstant(codePointsToInternedTruffleString(value.getCodePoints()), b);
+                    emitPythonConstant(internConstant(codePointsToTruffleString(value.getCodePoints())), b);
                     break;
                 case BYTES:
                     addConstant(value.getBytes());
@@ -3674,7 +3685,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
                     b.beginSetItem();
 
                     if (futureFeatures.contains(FutureFeature.ANNOTATIONS)) {
-                        emitPythonConstant(Unparser.unparse(node.annotation), b);
+                        emitPythonConstant(internConstant(Unparser.unparse(node.annotation)), b);
                     } else {
                         node.annotation.accept(this);
                     }
@@ -3682,7 +3693,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
                     emitNameOperation("__annotations__", NameOperation.Read, b);
 
                     String mangled = maybeMangle(name);
-                    emitPythonConstant(toTruffleStringUncached(mangled), b);
+                    emitPythonConstant(toInternedTruffleStringUncached(mangled), b);
 
                     b.endSetItem();
                 }
@@ -4372,7 +4383,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
                     ArrayList<TruffleString> kwNames = new ArrayList<>();
                     ArrayList<ExprTy> kwValues = new ArrayList<>();
                     while (i < kws.length && kws[i].arg != null) {
-                        kwNames.add(toTruffleStringUncached(kws[i].arg));
+                        kwNames.add(toInternedTruffleStringUncached(kws[i].arg));
                         kwValues.add(kws[i].value);
                         i++;
                     }
@@ -4530,7 +4541,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
             b.beginCollectToObjectArray();
             emitUnstar(() -> {
                 emitMakeFunction(body, node, node.name, null, null);
-                emitPythonConstant(toTruffleStringUncached(node.name), b);
+                emitPythonConstant(toInternedTruffleStringUncached(node.name), b);
             }, node.bases, finalElements);
             b.endCollectToObjectArray();
 
@@ -4568,7 +4579,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
             public Void visit(ExprTy.Attribute node) {
                 beginSourceSection(node, b);
                 emitTraceLineChecked(node, b);
-                b.beginDeleteAttribute(toTruffleStringUncached(maybeMangleAndAddName(node.attr)));
+                b.beginDeleteAttribute(maybeMangleAndAddName(node.attr));
                 node.value.accept(StatementCompiler.this);
                 b.endDeleteAttribute();
 
@@ -4827,7 +4838,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
                 for (int i = 0; i < args.kwDefaults.length; i++) {
                     // Only emit keywords with default values.
                     if (args.kwDefaults[i] != null) {
-                        keys.add(toTruffleStringUncached(mangle(kwOnlyArgs[i].arg)));
+                        keys.add(toInternedTruffleStringUncached(mangle(kwOnlyArgs[i].arg)));
                         args.kwDefaults[i].accept(this);
                     }
                 }
@@ -4895,7 +4906,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
             emitPythonConstant(paramAnnotation.name, b);
 
             if (futureFeatures.contains(FutureFeature.ANNOTATIONS)) {
-                emitPythonConstant(Unparser.unparse(paramAnnotation.annotation), b);
+                emitPythonConstant(internConstant(Unparser.unparse(paramAnnotation.annotation)), b);
             } else {
                 if (paramAnnotation.annotation instanceof ExprTy.Starred starred) {
                     // *args: *Ts (where Ts is a TypeVarTuple).
@@ -4940,7 +4951,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
         private void emitMakeFunction(BytecodeDSLCodeUnit codeUnit, Object scopeKey, String name,
                         BytecodeLocal defaultArgsLocal, BytecodeLocal defaultKwargsLocal,
                         ArgumentsTy argsForDefaults, List<ParamAnnotation> annotations) {
-            TruffleString functionName = toTruffleStringUncached(name);
+            TruffleString functionName = toInternedTruffleStringUncached(name);
             Scope targetScope = ctx.scopeEnvironment.lookupScope(scopeKey);
             TruffleString qualifiedName = codeUnit.qualname;
 
@@ -5096,6 +5107,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
 
             for (AliasTy name : node.names) {
                 addConstant(PythonUtils.EMPTY_TRUFFLESTRING_ARRAY);
+                TruffleString moduleName = addName(name.name);
                 if (name.asName == null) {
                     // import a.b.c
                     // --> a = (Import "a.b.c" [] 0)
@@ -5106,7 +5118,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
                                     : name.name;
 
                     beginStoreLocal(resName, b);
-                    b.emitImport(toTruffleStringUncached(name.name), PythonUtils.EMPTY_TRUFFLESTRING_ARRAY, 0);
+                    b.emitImport(moduleName, PythonUtils.EMPTY_TRUFFLESTRING_ARRAY, 0);
                     endStoreLocal(resName, b);
                 } else {
                     // import a.b.c as x
@@ -5115,13 +5127,18 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
                     // --> x = (Import "a" [] 0)
                     String[] parts = name.name.split("\\.");
 
+                    // Register names in evaluation order before opening the nested operations.
+                    TruffleString[] importedNames = new TruffleString[parts.length];
+                    for (int i = 1; i < parts.length; i++) {
+                        importedNames[i] = addName(parts[i]);
+                    }
                     beginStoreLocal(name.asName, b);
 
                     for (int i = parts.length - 1; i >= 0; i--) {
                         if (i != 0) {
-                            b.beginImportFrom(toTruffleStringUncached(parts[i]));
+                            b.beginImportFrom(importedNames[i]);
                         } else {
-                            b.emitImport(toTruffleStringUncached(name.name), PythonUtils.EMPTY_TRUFFLESTRING_ARRAY, 0);
+                            b.emitImport(moduleName, PythonUtils.EMPTY_TRUFFLESTRING_ARRAY, 0);
                         }
                     }
 
@@ -5146,8 +5163,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
                 ctx.errorCallback.onError(ErrorType.Syntax, node.getSourceRange(), "from __future__ imports must occur at the beginning of the file");
             }
 
-            String moduleName = addName(node.module == null ? "" : node.module);
-            TruffleString tsModuleName = toTruffleStringUncached(moduleName);
+            TruffleString tsModuleName = addName(node.module == null ? "" : node.module);
 
             if (node.names[0].name.equals("*")) {
                 b.emitImportStar(tsModuleName, node.level);
@@ -5156,7 +5172,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
 
                 TruffleString[] fromList = new TruffleString[node.names.length];
                 for (int i = 0; i < fromList.length; i++) {
-                    fromList[i] = toTruffleStringUncached(node.names[i].name);
+                    fromList[i] = toInternedTruffleStringUncached(node.names[i].name);
                 }
 
                 b.beginBindStackValue();
@@ -5166,11 +5182,10 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
                 TruffleString[] importedNames = new TruffleString[node.names.length];
                 for (int i = 0; i < node.names.length; i++) {
                     AliasTy alias = node.names[i];
-                    addName(alias.name);
+                    TruffleString name = addName(alias.name, fromList[i]);
                     String asName = alias.asName == null ? alias.name : alias.asName;
                     beginStoreLocal(asName, b);
 
-                    TruffleString name = toTruffleStringUncached(alias.name);
                     importedNames[i] = name;
                     b.beginImportFrom(name);
                     b.emitLoadStackValue(module);
@@ -5570,7 +5585,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
             // attributes needs to be converted into truffle strings
             TruffleString[] tsAttrs = new TruffleString[attrsLen];
             for (int i = 0; i < attrsLen; i++) {
-                tsAttrs[i] = toTruffleStringUncached(kwdAttrs[i]);
+                tsAttrs[i] = toInternedTruffleStringUncached(kwdAttrs[i]);
             }
 
             BytecodeLocal attrsValue = beginTemporaryLocal();
@@ -7208,7 +7223,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
             String name = ((ExprTy.Name) node.name).id;
             // @formatter:off
             b.beginMakeTypeAliasType();
-                emitPythonConstant(toTruffleStringUncached(name), b);
+                emitPythonConstant(toInternedTruffleStringUncached(name), b);
                 if (node.isGeneric()) {
                     visitTypeParams(node.typeParams);
                 } else {
@@ -7229,14 +7244,14 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
                 int kind = node.bound instanceof Tuple ? MakeTypeParamKind.TYPE_VAR_WITH_CONSTRAINTS : MakeTypeParamKind.TYPE_VAR_WITH_BOUND;
                 // @formatter:off
                 b.beginMakeTypeParam(kind);
-                    emitPythonConstant(toTruffleStringUncached(node.name), b);
+                    emitPythonConstant(toInternedTruffleStringUncached(node.name), b);
                     emitMakeFunction(code.codeUnit(), node, node.name, null, null);
                 b.endMakeTypeParam();
                 // @formatter:on
             } else {
                 // @formatter:off
                 b.beginMakeTypeParam(MakeTypeParamKind.TYPE_VAR);
-                    emitPythonConstant(toTruffleStringUncached(node.name), b);
+                    emitPythonConstant(toInternedTruffleStringUncached(node.name), b);
                     b.emitLoadNull(); // boundOrConstraints
                 b.endMakeTypeParam();
                 // @formatter:on
@@ -7262,7 +7277,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
             b.beginBindStackValue();
             // @formatter:off
             b.beginMakeTypeParam(MakeTypeParamKind.PARAM_SPEC);
-                emitPythonConstant(toTruffleStringUncached(node.name), b);
+                emitPythonConstant(toInternedTruffleStringUncached(node.name), b);
                 b.emitLoadNull();
             b.endMakeTypeParam();
             StackValue typeParam = b.endBindStackValue();
@@ -7285,7 +7300,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
             b.beginBindStackValue();
             // @formatter:off
             b.beginMakeTypeParam(MakeTypeParamKind.TYPE_VAR_TUPLE);
-                emitPythonConstant(toTruffleStringUncached(node.name), b);
+                emitPythonConstant(toInternedTruffleStringUncached(node.name), b);
                 b.emitLoadNull(); // boundOrConstraints
             b.endMakeTypeParam();
             StackValue typeParam = b.endBindStackValue();

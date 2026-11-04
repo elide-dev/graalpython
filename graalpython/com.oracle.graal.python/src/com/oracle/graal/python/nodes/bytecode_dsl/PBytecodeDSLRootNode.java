@@ -55,10 +55,16 @@ import static com.oracle.graal.python.nodes.SpecialMethodNames.T___EXIT__;
 import static com.oracle.graal.python.runtime.exception.PythonErrorType.AssertionError;
 import static com.oracle.graal.python.runtime.exception.PythonErrorType.KeyError;
 import static com.oracle.graal.python.util.PythonUtils.checkAssumption;
+import static com.oracle.graal.python.util.PythonUtils.isInterned;
+import static com.oracle.graal.python.util.PythonUtils.shouldInternConstant;
 import static com.oracle.graal.python.util.PythonUtils.tsLiteral;
 import static com.oracle.truffle.api.CompilerDirectives.shouldNotReachHere;
 
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
 import java.math.BigInteger;
+import java.util.List;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
@@ -480,6 +486,47 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
         return PBytecodeDSLRootNodeGen.BYTECODE.cast(root);
     }
 
+    public static PBytecodeDSLRootNode createBadOpcode(PythonLanguage language, TruffleString name) {
+        BytecodeDSLCodeUnit.BytecodeSupplier supplier = new BytecodeDSLCodeUnit.BytecodeSupplier() {
+            @Override
+            public PBytecodeDSLRootNode createRootNode(PythonLanguage rootLanguage) {
+                return PBytecodeDSLRootNodeGen.create(rootLanguage, BytecodeConfig.DEFAULT, b -> {
+                    b.beginRoot();
+                    // Reserve the local used by exception tracing and profiling.
+                    b.createLocal();
+                    b.emitEnterInstrumentedRoot();
+                    b.beginRaise();
+                    b.beginCallUnaryMethod();
+                    b.emitLoadConstant(SystemError);
+                    b.emitLoadConstant(ErrorMessages.UNKNOWN_OPCODE);
+                    b.endCallUnaryMethod();
+                    b.emitLoadConstant(PNone.NO_VALUE);
+                    b.endRaise();
+                    b.endRoot();
+                }).getNode(0);
+            }
+
+            @Override
+            public byte[] createSerializedBytecode(PythonLanguage rootLanguage) {
+                try {
+                    ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                    createRootNode(rootLanguage).getRootNodes().serialize(new DataOutputStream(bytes), new MarshalModuleBuiltins.PBytecodeDSLSerializer(rootLanguage));
+                    return bytes.toByteArray();
+                } catch (IOException e) {
+                    throw shouldNotReachHere(e);
+                }
+            }
+        };
+        BytecodeDSLCodeUnit code = new BytecodeDSLCodeUnit(name, name, 0, 0, 0, 0,
+                        PythonUtils.EMPTY_TRUFFLESTRING_ARRAY, PythonUtils.EMPTY_TRUFFLESTRING_ARRAY,
+                        PythonUtils.EMPTY_TRUFFLESTRING_ARRAY, PythonUtils.EMPTY_TRUFFLESTRING_ARRAY,
+                        PythonUtils.EMPTY_OBJECT_ARRAY, 1, 0, 1, 0, -1, -1, -1, 0, 0, List.of(), supplier);
+        PBytecodeDSLRootNode root = code.createRootNode(language, false);
+        // Preserve the empty co_code of these placeholder code objects.
+        root.setCode(PythonUtils.EMPTY_BYTE_ARRAY);
+        return root;
+    }
+
     @TruffleBoundary
     public static void updateAllToTracingConfig(PythonLanguage language) {
         PBytecodeDSLRootNodeGen.BYTECODE.update(language, BytecodeConfig.WITH_SOURCE);
@@ -807,7 +854,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
     }
 
     private PFrame ensurePyFrame(VirtualFrame frame, BytecodeNode location) {
-        return getTracingNodes(location).materializeFrameNode.executeOnStack(frame, location, true, false);
+        return getTracingNodes(location).materializeFrameNode.executeOnStack(frame, location, true, 0);
     }
 
     @InliningCutoff
@@ -1828,7 +1875,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
 
         @NeverDefault
         static Assumption getCodeStableAssumption(PCode code) {
-            PBytecodeDSLRootNode rootNode = (PBytecodeDSLRootNode) code.getRootNode();
+            PBytecodeDSLRootNode rootNode = code.getRootNode();
             return rootNode.getFunctionCodeFinalAssumption();
         }
 
@@ -2067,6 +2114,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         @Cached InlinedConditionProfile hasDescrGetProfile,
                         @Cached InlinedConditionProfile classBindingProfile,
                         @Cached CallSlotGetAttrNode getAttrNode) {
+            assert !shouldInternConstant(key) || isInterned(key);
             Object objectType;
             if (isTypeNode.execute(inliningTarget, object) && isSubtypeNode.execute(object, type)) {
                 objectType = object;
@@ -2104,6 +2152,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         @Bind Node inliningTarget,
                         @Bind BytecodeNode location,
                         @Cached PyObjectGetAttr getAttributeNode) {
+            assert !shouldInternConstant(key) || isInterned(key);
             Object result = getAttributeNode.execute(frame, inliningTarget, superObject, key);
             if (method) {
                 receiver.setObject(location, frame, superObject);
@@ -2131,6 +2180,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
         @Specialization(guards = "!isNoValue(result)", excludeForUncached = false)
         public static Object doStringFastPath(VirtualFrame frame, TruffleString name, TruffleString obj,
                         @Cached(value = "findStringMethod($node, name)", allowUncached = true, weak = true) Object result) {
+            assert !shouldInternConstant(name) || isInterned(name);
             return result;
         }
 
@@ -2145,6 +2195,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         @Cached("cachedShape.getProperty(name) == null") boolean noInstanceAttribute,
                         @Cached(value = "loadCacheableAttr(obj, cachedShape, name)", weak = true) Object result,
                         @Cached("getTypeStableAssumption(cachedShape)") Assumption typeStableAssumption) {
+            assert !shouldInternConstant(name) || isInterned(name);
             assert typeStableAssumption != null;
             assert PythonLanguage.get(null).isSingleContext(); // implied by type stable assumption being single ctx only
             assert obj.checkDictFlags();
@@ -2177,6 +2228,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         @Cached("obj.getShape()") Shape cachedShape,
                         @Cached("cachedShape.getProperty(name) == null") boolean noInstanceAttribute,
                         @Cached(value = "loadCacheableAttr(obj, cachedShape, name)", weak = true) Object result) {
+            assert !shouldInternConstant(name) || isInterned(name);
             assert obj.checkDictFlags();
             return result;
         }
@@ -2191,6 +2243,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         @Cached("obj.getShape()") Shape cachedShape,
                         @Cached("canBeSpecialMethod(name)") boolean canBeSpecial,
                         @Cached("getPropertyGetterWithFinalAssumption(cachedShape, name)") PropertyGetter getter) throws FastPathBailoutException {
+            assert !shouldInternConstant(name) || isInterned(name);
             return new BoundDescriptor(GetAttribute.getValue(getter, obj));
         }
 
@@ -2230,6 +2283,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         TruffleString name, Object obj,
                         @Bind Node inliningTarget,
                         @Cached PyObjectGetMethod getMethod) {
+            assert !shouldInternConstant(name) || isInterned(name);
             return getMethod.execute(frame, inliningTarget, obj, name);
         }
     }
@@ -2278,6 +2332,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         @Cached("key") TruffleString cachedKey,
                         @Cached("receiver.getShape()") Shape cachedShape,
                         @Cached("getPropertyGetterWithFinalAssumption(cachedShape, key)") PropertyGetter getter) throws FastPathBailoutException, UnexpectedResultException {
+            assert !shouldInternConstant(key) || isInterned(key);
             assert key == cachedKey; // should be a constant operand
             return getIntValue(getter, receiver);
         }
@@ -2292,6 +2347,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         @Cached("key") TruffleString cachedKey,
                         @Cached("receiver.getShape()") Shape cachedShape,
                         @Cached("getPropertyGetterWithFinalAssumption(cachedShape, key)") PropertyGetter getter) throws FastPathBailoutException {
+            assert !shouldInternConstant(key) || isInterned(key);
             assert key == cachedKey; // should be a constant operand
             return getValue(getter, receiver);
         }
@@ -2313,7 +2369,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
             // Some types with known tp_descr_get implementation that just return itself when
             // `instance` parameter to tp_descr_get is NO_VALUE
             if (value instanceof PBuiltinFunction || value instanceof PFunction) {
-                assert CallSlotDescrGet.executeUncached(GetObjectSlotsNode.executeUncached(value).tp_descr_get(), value, PNone.NO_VALUE, object) == value;
+                assert !PythonOptions.detailedAssertionsEnabled() || CallSlotDescrGet.executeUncached(GetObjectSlotsNode.executeUncached(value).tp_descr_get(), value, PNone.NO_VALUE, object) == value;
                 return value;
             }
             Object valueKlass = GetClassNode.executeUncached(value);
@@ -2363,6 +2419,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         @Cached("loadCacheableTypeAttr(receiver, key)") Object result,
                         @Cached("receiver") PythonManagedClass cachedReceiver,
                         @Cached("getTypeStableAssumptionForReceiver(cachedReceiver)") Assumption typeStableAssumption) throws UnexpectedResultException, InvalidAssumptionException {
+            assert !shouldInternConstant(key) || isInterned(key);
             checkAssumption(typeStableAssumption);
             if (result instanceof Integer) {
                 return (int) result;
@@ -2382,6 +2439,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         @Cached("loadCacheableTypeAttr(receiver, key)") Object result,
                         @Cached("receiver") PythonManagedClass cachedReceiver,
                         @Cached("getTypeStableAssumptionForReceiver(cachedReceiver)") Assumption typeStableAssumption) throws InvalidAssumptionException {
+            assert !shouldInternConstant(key) || isInterned(key);
             checkAssumption(typeStableAssumption);
             return result;
         }
@@ -2397,6 +2455,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         @Cached("receiver.getShape()") Shape cachedShape,
                         @Cached("loadCacheableTypeAttr(receiver, key)") Object result,
                         @Cached(value = "receiver", weak = true) PythonManagedClass cachedReceiver) {
+            assert !shouldInternConstant(key) || isInterned(key);
             return result;
         }
 
@@ -2423,6 +2482,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         @Cached("receiver") PythonManagedClass cachedReceiver,
                         @Cached("getTypeStableAssumptionForValue(result)") Assumption valueTypeStableAssumption,
                         @Cached("getTypeStableAssumptionForReceiver(cachedReceiver)") Assumption typeStableAssumption) throws InvalidAssumptionException {
+            assert !shouldInternConstant(key) || isInterned(key);
             checkAssumption(typeStableAssumption);
             checkAssumption(valueTypeStableAssumption);
             return result;
@@ -2506,6 +2566,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         @Cached("getProperty(cachedShape, key)") PProperty property,
                         @Cached("getTypeStableAssumption(cachedShape)") Assumption typeStableAssumption,
                         @Cached CallUnaryMethodNode callNode) throws FastPathBailoutException, InvalidAssumptionException {
+            assert !shouldInternConstant(key) || isInterned(key);
             checkAssumption(typeStableAssumption);
             Object fget = property.getFget();
             if (fget == null) {
@@ -2558,6 +2619,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         @Cached("getTypeStableAssumption(cachedShape)") Assumption typeStableAssumption,
                         @Cached("getIndexedSlotsCount(cachedShape)") int slotsCount,
                         @Exclusive @Cached InlinedBranchProfile initProfile) throws FastPathBailoutException, UnexpectedResultException, InvalidAssumptionException {
+            assert !shouldInternConstant(key) || isInterned(key);
             checkAssumption(typeStableAssumption);
             Object value = getIndexedSlotValue(inliningTarget, initProfile, receiver, index, slotsCount);
             if (value instanceof Integer integer) {
@@ -2580,6 +2642,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         @Cached("getTypeStableAssumption(cachedShape)") Assumption typeStableAssumption,
                         @Cached("getIndexedSlotsCount(cachedShape)") int slotsCount,
                         @Exclusive @Cached InlinedBranchProfile initProfile) throws FastPathBailoutException, InvalidAssumptionException {
+            assert !shouldInternConstant(key) || isInterned(key);
             checkAssumption(typeStableAssumption);
             return getIndexedSlotValue(inliningTarget, initProfile, receiver, index, slotsCount);
         }
@@ -2596,6 +2659,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         @Cached("getPythonClassOrNull(cachedShape)") PythonClass cachedPythonClass,
                         @Cached("getTypeStableAssumption(cachedPythonClass)") Assumption typeStableAssumption,
                         @Cached("getPropertyGetterWithFinalAssumption(cachedShape, key)") PropertyGetter getter) throws FastPathBailoutException, UnexpectedResultException {
+            assert !shouldInternConstant(key) || isInterned(key);
             assert cachedPythonClass == null || PythonLanguage.get(null).isSingleContext();
             return getIntValue(getter, receiver);
         }
@@ -2613,6 +2677,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         @Cached("getPythonClassOrNull(cachedShape)") PythonClass cachedPythonClass,
                         @Cached("getTypeStableAssumption(cachedPythonClass)") Assumption typeStableAssumption,
                         @Cached("getPropertyGetterWithFinalAssumption(cachedShape, key)") PropertyGetter getter) throws FastPathBailoutException {
+            assert !shouldInternConstant(key) || isInterned(key);
             assert cachedPythonClass == null || PythonLanguage.get(null).isSingleContext();
             return getValue(getter, receiver);
         }
@@ -2624,6 +2689,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         TruffleString key,
                         Object obj,
                         @Cached("create(key)") GetFixedAttributeNode getAttributeNode) {
+            assert !shouldInternConstant(key) || isInterned(key);
             return getAttributeNode.execute(frame, obj);
         }
 
@@ -2633,6 +2699,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
         public static Object doItUncached(VirtualFrame frame, TruffleString key, Object obj,
                         @Bind Node inliningTargetForDummy,
                         @Cached PyObjectGetAttr dummyToForceStoreBCI) {
+            assert !shouldInternConstant(key) || isInterned(key);
             return PyObjectGetAttr.getUncached().execute(frame, null, obj, key);
         }
     }
@@ -2694,6 +2761,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         @Cached("getPythonClassOrNull(cachedShape)") PythonClass cachedPythonClass,
                         @Cached("getTypeStableAssumption(cachedPythonClass)") Assumption typeStableAssumption,
                         @Cached DynamicObject.PutNode putNode) {
+            assert !shouldInternConstant(key) || isInterned(key);
             putNode.execute(receiver, key, value);
         }
 
@@ -2704,6 +2772,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         Object object,
                         @Bind Node inliningTarget,
                         @Exclusive @Cached PyObjectSetAttr setAttrNode) {
+            assert !shouldInternConstant(key) || isInterned(key);
             setAttrNode.execute(frame, inliningTarget, object, key, value);
         }
     }
@@ -2718,6 +2787,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         Object object,
                         @Bind Node inliningTarget,
                         @Cached PyObjectSetAttrO setAttrO) {
+            assert !shouldInternConstant(key) || isInterned(key);
             setAttrO.execute(frame, inliningTarget, object, key, PNone.NO_VALUE);
 
         }

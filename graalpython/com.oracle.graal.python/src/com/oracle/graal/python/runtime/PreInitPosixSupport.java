@@ -281,6 +281,20 @@ public final class PreInitPosixSupport extends PosixSupport {
 
     @Override
     @TruffleBoundary
+    public final int msvcrtKbhit() throws PosixException {
+        checkNotInPreInitialization();
+        return nativePosixSupport.msvcrtKbhit();
+    }
+
+    @Override
+    @TruffleBoundary
+    public final boolean supportsVirtualTerminal() {
+        checkNotInPreInitialization();
+        return nativePosixSupport.supportsVirtualTerminal();
+    }
+
+    @Override
+    @TruffleBoundary
     public final int[] pipe() throws PosixException {
         checkNotInPreInitialization();
         return nativePosixSupport.pipe();
@@ -438,9 +452,9 @@ public final class PreInitPosixSupport extends PosixSupport {
 
     @Override
     @TruffleBoundary
-    public final void symlinkat(Object target, int linkpathDirFd, Object linkpath) throws PosixException {
+    public final void symlinkat(Object target, int linkpathDirFd, Object linkpath, boolean targetIsDirectory) throws PosixException {
         checkNotInPreInitialization();
-        nativePosixSupport.symlinkat(target, linkpathDirFd, linkpath);
+        nativePosixSupport.symlinkat(target, linkpathDirFd, linkpath, targetIsDirectory);
     }
 
     @Override
@@ -900,28 +914,24 @@ public final class PreInitPosixSupport extends PosixSupport {
     }
 
     @Override
-    @TruffleBoundary
     public final byte mmapReadByte(Object mmap, long index) throws PosixException {
         checkNotInPreInitialization();
         return nativePosixSupport.mmapReadByte(mmap, index);
     }
 
     @Override
-    @TruffleBoundary
     public final void mmapWriteByte(Object mmap, long index, byte value) throws PosixException {
         checkNotInPreInitialization();
         nativePosixSupport.mmapWriteByte(mmap, index, value);
     }
 
     @Override
-    @TruffleBoundary
     public final int mmapReadBytes(Object mmap, long index, byte[] bytes, int length) throws PosixException {
         checkNotInPreInitialization();
         return nativePosixSupport.mmapReadBytes(mmap, index, bytes, length);
     }
 
     @Override
-    @TruffleBoundary
     public final void mmapWriteBytes(Object mmap, long index, byte[] bytes, int length) throws PosixException {
         checkNotInPreInitialization();
         nativePosixSupport.mmapWriteBytes(mmap, index, bytes, length);
@@ -942,7 +952,6 @@ public final class PreInitPosixSupport extends PosixSupport {
     }
 
     @Override
-    @TruffleBoundary
     public final long mmapGetPointer(Object mmap) throws UnsupportedPosixFeatureException {
         checkNotInPreInitialization();
         return nativePosixSupport.mmapGetPointer(mmap);

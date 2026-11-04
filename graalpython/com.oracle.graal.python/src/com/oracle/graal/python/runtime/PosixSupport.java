@@ -73,7 +73,8 @@ public abstract class PosixSupport {
      * warnings. After devirtualization, partial evaluation sees the concrete implementation, which
      * needs its own annotation because method annotations are not inherited. TruffleString
      * conversions that benefit from partial evaluation belong in PosixSupportNodes, outside these
-     * boundaries.
+     * boundaries. The mmap memory access methods are an exception: the native backend performs
+     * direct memory accesses that must remain visible to partial evaluation.
      */
 
     public static final int ST_MODE = 0;
@@ -500,6 +501,12 @@ public abstract class PosixSupport {
         public final Throwable fillInStackTrace() {
             return this;
         }
+    }
+
+    /** Raised by Windows readlink for a reparse point that is not a symbolic link or junction. */
+    public static final class NotASymbolicLinkException extends PosixException {
+
+        private static final long serialVersionUID = 1L;
     }
 
     /**
@@ -952,16 +959,14 @@ public abstract class PosixSupport {
     @TruffleBoundary
     public abstract Object mmap(Node location, long length, int prot, int flags, int fd, long offset, Object tagname) throws PosixException;
 
-    @TruffleBoundary
+    // Keep memory accesses and pointer extraction visible to partial evaluation in the native
+    // backend and its pre-initialization wrapper. Other backends may still use boundaries.
     public abstract byte mmapReadByte(Object mmap, long index) throws PosixException;
 
-    @TruffleBoundary
     public abstract void mmapWriteByte(Object mmap, long index, byte value) throws PosixException;
 
-    @TruffleBoundary
     public abstract int mmapReadBytes(Object mmap, long index, byte[] bytes, int length) throws PosixException;
 
-    @TruffleBoundary
     public abstract void mmapWriteBytes(Object mmap, long index, byte[] bytes, int length) throws PosixException;
 
     @TruffleBoundary
@@ -970,7 +975,6 @@ public abstract class PosixSupport {
     @TruffleBoundary
     public abstract void mmapUnmap(Object mmap, long length) throws PosixException;
 
-    @TruffleBoundary
     public abstract long mmapGetPointer(Object mmap) throws UnsupportedPosixFeatureException;
 
     @TruffleBoundary
@@ -1002,6 +1006,12 @@ public abstract class PosixSupport {
 
     @TruffleBoundary
     public abstract void msvcrtLocking(int fd, int mode, long nbytes) throws PosixException;
+
+    @TruffleBoundary
+    public abstract int msvcrtKbhit() throws PosixException;
+
+    @TruffleBoundary
+    public abstract boolean supportsVirtualTerminal();
 
     @TruffleBoundary
     public abstract int[] pipe() throws PosixException;
@@ -1107,7 +1117,7 @@ public abstract class PosixSupport {
     public abstract void linkat(int oldFdDir, Object oldPath, int newFdDir, Object newPath, int flags) throws PosixException;
 
     @TruffleBoundary
-    public abstract void symlinkat(Object target, int linkpathDirFd, Object linkpath) throws PosixException;
+    public abstract void symlinkat(Object target, int linkpathDirFd, Object linkpath, boolean targetIsDirectory) throws PosixException;
 
     @TruffleBoundary
     public abstract void mkdirat(int dirFd, Object pathname, int mode) throws PosixException;

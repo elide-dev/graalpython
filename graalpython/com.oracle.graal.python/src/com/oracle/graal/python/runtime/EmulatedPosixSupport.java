@@ -607,6 +607,18 @@ public final class EmulatedPosixSupport extends PosixResources {
 
     @Override
     @TruffleBoundary
+    public int msvcrtKbhit() throws UnsupportedPosixFeatureException {
+        throw createUnsupportedFeature("msvcrt.kbhit");
+    }
+
+    @Override
+    @TruffleBoundary
+    public boolean supportsVirtualTerminal() {
+        return false;
+    }
+
+    @Override
+    @TruffleBoundary
     public int[] pipe() throws PosixException {
         try {
             return super.pipeResource();
@@ -1512,7 +1524,7 @@ public final class EmulatedPosixSupport extends PosixResources {
 
     @Override
     @TruffleBoundary
-    public void symlinkat(Object target, int linkDirFd, Object link) throws PosixException {
+    public void symlinkat(Object target, int linkDirFd, Object link, boolean targetIsDirectory) throws PosixException {
         TruffleFile linkFile = resolvePath(linkDirFd, pathToJavaString(link));
         TruffleFile targetFile = getTruffleFile(pathToJavaString(target));
         try {
@@ -1901,6 +1913,10 @@ public final class EmulatedPosixSupport extends PosixResources {
         String path = getFilePath(fd);
         if (path == null) {
             throw posixException(OSErrorEnum.EBADF);
+        }
+        if (getPythonOS() == PLATFORM_WIN32) {
+            // Match the no-op Windows behavior of fchmodat in this backend.
+            return;
         }
         TruffleFile file = getTruffleFile(path);
         Set<PosixFilePermission> permissions = modeToPosixFilePermissions(mode);
