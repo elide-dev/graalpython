@@ -256,6 +256,8 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
 
     // Mutable (must be reset)
     private final Deque<SourceRange> statementLocations = new ArrayDeque<>();
+    /** Source ranges of the currently open source sections, innermost first. */
+    private final Deque<SourceRange> openSourceRanges = new ArrayDeque<>();
     private SourceRange currentLocation;
     BytecodeLocal yieldFromGenerator;
     private int lastTracedLine;
@@ -765,6 +767,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
 
     public void reset() {
         statementLocations.clear();
+        openSourceRanges.clear();
         currentLocation = null;
         currentSaveExceptionLocal = null;
         prevSaveExceptionLocal = null;
@@ -946,7 +949,8 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
         }
     }
 
-    private static void beginSourceSectionInner(Builder b, SourceRange sourceRange) {
+    private void beginSourceSectionInner(Builder b, SourceRange sourceRange) {
+        openSourceRanges.push(sourceRange);
         if (sourceRange.startLine >= 1 && sourceRange != SourceRange.ARTIFICIAL_RANGE) {
             if (sourceRange.startColumn >= 0 && sourceRange.endLine >= sourceRange.startLine && sourceRange.endColumn >= 0) {
                 int startColumn = sourceRange.startColumn + 1;
@@ -971,6 +975,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
 
     void endSourceSection(Builder b) {
         b.endSourceSection();
+        openSourceRanges.pop();
     }
 
     void beginStatement(SSTNode node, Builder b) {
@@ -1942,23 +1947,29 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
 
     /**
      * Opens a variable tag. The names are not recorded here: instrumentation resolves them lazily
-     * from the operands of the tagged instructions (see {@code VariableAccessDescriptor}). The
-     * source layers are, from most to least concrete: the enclosing statement (or expression
-     * root), then one identifier range per variable operand of the tagged store or load.
+     * from the operands of the tagged instructions (see {@code VariableAccessDescriptor}).
      * <p>
-     * Bytecode DSL stack walks select the innermost tag, so its program location stays at the
-     * statement to keep debugger caller locations stable; the identifier layers locate the access.
+     * Layout, from outermost: one identifier range per variable operand of the tagged store or
+     * load (in reverse operand order), the enclosing statement, the tag, and then the source range
+     * that was innermost before the tag. The tag's own source sections are therefore, from most to
+     * least concrete, the statement followed by the identifiers in operand order. Bytecode DSL
+     * stack walks select the innermost tag, so debugger caller locations stay at the statement.
+     * The tagged instructions keep their previous innermost location, so exception locations,
+     * tracebacks and line tables are unaffected by these layers.
      */
     private void beginVariableTag(boolean write, Builder b, SourceRange... accessRanges) {
+        SourceRange enclosing = openSourceRanges.isEmpty() ? SourceRange.ARTIFICIAL_RANGE : openSourceRanges.peek();
         for (int i = accessRanges.length - 1; i >= 0; i--) {
             beginSourceSectionInner(b, accessRanges[i]);
         }
         SourceRange statement = statementLocations.peek();
         beginSourceSectionInner(b, variableSourceRange(statement != null ? statement : getRootSourceRange(startNode)));
         b.beginTag(write ? WriteVariableTag.class : ReadVariableTag.class);
+        beginSourceSectionInner(b, enclosing);
     }
 
     private void endVariableTag(boolean write, int accessCount, Builder b) {
+        endSourceSection(b);
         b.endTag(write ? WriteVariableTag.class : ReadVariableTag.class);
         for (int i = 0; i <= accessCount; i++) {
             endSourceSection(b);
@@ -4049,12 +4060,11 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
                 beginStoreLocal(node.id, b);
                 beginAugAssign();
                 if (tagged) {
-                    // Shares the enclosing write tag's statement and identifier layers.
-                    b.beginTag(ReadVariableTag.class);
+                    beginVariableTag(false, b, variableAccessRange(node));
                 }
                 emitReadLocal(node.id, b);
                 if (tagged) {
-                    b.endTag(ReadVariableTag.class);
+                    endVariableTag(false, b);
                 }
                 value.accept(StatementCompiler.this);
                 endAugAssign();
@@ -4890,7 +4900,7 @@ public final class RootNodeCompiler implements BaseBytecodeDSLVisitor<BytecodeDS
                 b.endTraceLineWithArgument(decorators[decorators.length - 1 - i].getSourceRange().startLine);
                 b.endInstrumentCall();
                 endCallUnaryMethod();
-                b.endSourceSection();
+                endSourceSection(b);
             }
         }
 
