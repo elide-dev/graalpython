@@ -288,8 +288,6 @@ import com.oracle.truffle.api.bytecode.BytecodeFrame;
 import com.oracle.truffle.api.bytecode.BytecodeLocation;
 import com.oracle.truffle.api.bytecode.BytecodeNode;
 import com.oracle.truffle.api.bytecode.TagTreeNode;
-import com.oracle.truffle.api.instrumentation.StandardTags.ReadVariableTag;
-import com.oracle.truffle.api.instrumentation.StandardTags.WriteVariableTag;
 import com.oracle.truffle.api.bytecode.BytecodeRootNode;
 import com.oracle.truffle.api.bytecode.ConstantOperand;
 import com.oracle.truffle.api.bytecode.ContinuationResult;
@@ -504,12 +502,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
         if (co == null) {
             return null;
         }
-        if (node.hasTag(ReadVariableTag.class)) {
-            return VariableAccessDescriptor.create(ReadVariableTag.NAME, false, node.getSourceSections(), co.variableAccesses);
-        } else if (node.hasTag(WriteVariableTag.class)) {
-            return VariableAccessDescriptor.create(WriteVariableTag.NAME, true, node.getSourceSections(), co.variableAccesses);
-        }
-        return null;
+        return VariableAccessDescriptor.create(node, co);
     }
 
     public final PythonLanguage getLanguage() {
