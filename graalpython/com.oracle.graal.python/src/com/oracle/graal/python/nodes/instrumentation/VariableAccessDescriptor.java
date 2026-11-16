@@ -45,6 +45,16 @@ import java.util.ArrayList;
 import java.util.List;
 
 import com.oracle.graal.python.nodes.bytecode_dsl.BytecodeDSLCodeUnit;
+import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode.ForIterate;
+import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode.LoadCell;
+import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode.LoadFromDictOrCell;
+import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode.LoadFromDictOrGlobals;
+import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode.ReadName;
+import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode.StoreCell;
+import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode.UnpackToLocals2;
+import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode.WriteGlobal;
+import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode.WriteName;
+import com.oracle.graal.python.nodes.frame.ReadGlobalOrBuiltinNode;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.bytecode.BytecodeNode;
 import com.oracle.truffle.api.bytecode.Instruction;
@@ -102,10 +112,12 @@ public final class VariableAccessDescriptor implements TruffleObject {
         collectNestedVariableTags(node, nested);
 
         // Operands are emitted before the operation that consumes them, so the access is the last
-        // matching instruction of this region outside nested variable tags. Cell stores receive
-        // the cell from the region's first local load instead of an index operand.
+        // load or store of this region outside nested variable tags: a custom name operation, or
+        // a built-in instruction with a local argument (load.local/store.local). Instructions are
+        // identified by operation class and arguments, never by their debug names. Cell stores
+        // receive the cell from the region's first built-in local load.
         Instruction access = null;
-        Instruction firstLocalLoad = null;
+        Instruction firstLocalAccess = null;
         int returnIndex = node.getReturnBytecodeIndex();
         for (int bci = node.getEnterBytecodeIndex(); bci <= returnIndex;) {
             TagTree skip = enclosing(nested, bci);
@@ -114,11 +126,15 @@ public final class VariableAccessDescriptor implements TruffleObject {
                 continue;
             }
             Instruction instruction = bytecode.getInstruction(bci);
-            String name = baseName(instruction);
-            if (firstLocalLoad == null && name.equals("load.local")) {
-                firstLocalLoad = instruction;
-            }
-            if (isAccess(name, write)) {
+            Class<?> operation = instruction.getDescriptor().getOperationClass();
+            if (operation == null) {
+                if (localSlot(instruction) >= 0) {
+                    if (firstLocalAccess == null) {
+                        firstLocalAccess = instruction;
+                    }
+                    access = instruction;
+                }
+            } else if (isAccessOperation(operation, write)) {
                 access = instruction;
             }
             bci = instruction.getNextBytecodeIndex();
@@ -127,7 +143,7 @@ public final class VariableAccessDescriptor implements TruffleObject {
             return null;
         }
 
-        String[] accessNames = resolveNames(code, bytecode, access, baseName(access), firstLocalLoad);
+        String[] accessNames = resolveNames(code, bytecode, access, firstLocalAccess);
         SourceSection[] sections = node.getSourceSections();
         List<VariableName> result = new ArrayList<>(accessNames.length);
         for (int i = 0; i < accessNames.length; i++) {
@@ -163,65 +179,63 @@ public final class VariableAccessDescriptor implements TruffleObject {
         return null;
     }
 
-    /** The instruction name without quickening or boxing-elimination suffixes. */
-    private static String baseName(Instruction instruction) {
-        String name = instruction.getName();
-        int quickening = name.indexOf('$');
-        return quickening < 0 ? name : name.substring(0, quickening);
+    private static boolean isAccessOperation(Class<?> operation, boolean write) {
+        if (write) {
+            return operation == StoreCell.class || operation == WriteGlobal.class || operation == WriteName.class || operation == ForIterate.class ||
+                            operation == UnpackToLocals2.class;
+        } else {
+            return operation == LoadCell.class || operation == LoadFromDictOrCell.class || operation == ReadGlobalOrBuiltinNode.class ||
+                            operation == LoadFromDictOrGlobals.class || operation == ReadName.class;
+        }
     }
 
-    private static boolean isAccess(String name, boolean write) {
-        if (write) {
-            return switch (name) {
-                case "store.local", "c.StoreCell", "c.WriteGlobal", "c.WriteName", "c.ForIterate", "c.UnpackToLocals2" -> true;
-                default -> false;
-            };
-        } else {
-            return switch (name) {
-                case "load.local", "c.LoadCell", "c.LoadFromDictOrCell", "c.ReadGlobal", "c.LoadFromDictOrGlobals", "c.ReadName" -> true;
-                default -> false;
-            };
+    /** The frame slot of a built-in local load or store, or -1. */
+    private static int localSlot(Instruction instruction) {
+        for (Argument argument : instruction.getArguments()) {
+            // Python disables block scoping, so local offsets and local indices coincide.
+            switch (argument.getKind()) {
+                case LOCAL_OFFSET:
+                    return argument.asLocalOffset();
+                case LOCAL_INDEX:
+                    return argument.asLocalIndex();
+                default:
+                    break;
+            }
         }
+        return -1;
     }
 
     /** One entry per variable operand of the access; {@code null} for compiler temporaries. */
-    private static String[] resolveNames(BytecodeDSLCodeUnit code, BytecodeNode bytecode, Instruction access, String name, Instruction firstLocalLoad) {
-        switch (name) {
-            case "c.StoreCell":
-                return firstLocalLoad == null ? new String[0] : resolveNames(code, bytecode, firstLocalLoad, "load.local", null);
-            case "c.LoadCell":
-            case "c.LoadFromDictOrCell":
-                for (Argument argument : access.getArguments()) {
-                    Integer index = intArgument(argument);
-                    if (index != null) {
-                        return new String[]{cellOrFreeName(code, index)};
-                    }
+    private static String[] resolveNames(BytecodeDSLCodeUnit code, BytecodeNode bytecode, Instruction access, Instruction firstLocalAccess) {
+        Class<?> operation = access.getDescriptor().getOperationClass();
+        if (operation == null) {
+            return new String[]{slotName(code, localSlot(access))};
+        } else if (operation == StoreCell.class) {
+            return firstLocalAccess == null ? new String[0] : new String[]{slotName(code, localSlot(firstLocalAccess))};
+        } else if (operation == LoadCell.class || operation == LoadFromDictOrCell.class) {
+            for (Argument argument : access.getArguments()) {
+                Integer index = intArgument(argument);
+                if (index != null) {
+                    return new String[]{cellOrFreeName(code, index)};
                 }
-                return new String[0];
-            case "c.WriteGlobal":
-            case "c.WriteName":
-            case "c.ReadGlobal":
-            case "c.LoadFromDictOrGlobals":
-            case "c.ReadName":
-                for (Argument argument : access.getArguments()) {
-                    if (argument.getKind() == Argument.Kind.CONSTANT && argument.asConstant() instanceof TruffleString constant) {
-                        return new String[]{constant.toJavaStringUncached()};
-                    }
-                }
-                return new String[0];
-            default:
-                // load.local and store.local encode the frame slot; c.ForIterate and
-                // c.UnpackToLocals2 take local accessors, whose info is the varnames index.
-                List<String> names = new ArrayList<>(2);
-                for (Argument argument : access.getArguments()) {
-                    if (argument.getKind() == Argument.Kind.LOCAL_OFFSET) {
-                        names.add(slotName(code, argument.asLocalOffset()));
-                    } else if (argument.getKind() == Argument.Kind.CONSTANT && argument.asConstant() instanceof LocalAccessor local) {
-                        names.add(local.getLocalInfo(bytecode) instanceof Integer index && index < code.varnames.length ? code.varnames[index].toJavaStringUncached() : null);
-                    }
-                }
-                return names.toArray(new String[0]);
+            }
+            return new String[0];
         }
+        // Global and name operations carry the name; ForIterate and UnpackToLocals2 take local
+        // accessors, whose info is the varnames index.
+        List<String> names = new ArrayList<>(2);
+        for (Argument argument : access.getArguments()) {
+            if (argument.getKind() != Argument.Kind.CONSTANT) {
+                continue;
+            }
+            Object constant = argument.asConstant();
+            if (constant instanceof TruffleString name) {
+                return new String[]{name.toJavaStringUncached()};
+            } else if (constant instanceof LocalAccessor local) {
+                names.add(local.getLocalInfo(bytecode) instanceof Integer index && index < code.varnames.length ? code.varnames[index].toJavaStringUncached() : null);
+            }
+        }
+        return names.toArray(new String[0]);
     }
 
     private static Integer intArgument(Argument argument) {

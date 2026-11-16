@@ -191,6 +191,10 @@ public class VariableAccessTests {
                                         cell += 1
                                     first = (second := cell)
                                     return inner, first, second
+                                class Child(Holder):
+                                    def method(self):
+                                        kept = super().method
+                                        return lambda: kept
                                 """, "scopes.py").build());
                 List<Access> accesses = analysis.accesses();
                 // module and class bodies: name stores/loads
@@ -212,6 +216,9 @@ public class VariableAccessTests {
                 assertTrue(line14.contains(new Access("outer", "first", true, 14, 5, "first")));
                 assertTrue(line14.contains(new Access("outer", "second", true, 14, 14, "second")));
                 assertTrue(line14.contains(new Access("outer", "cell", false, 14, 24, "cell")));
+                // the store value's implicit loads (__class__, self for super()) are not the access
+                assertEquals(List.of(new Access("method", "kept", true, 18, 9, "kept"), new Access("method", "super", false, 18, 16, "super")),
+                                accesses.stream().filter(a -> a.line() == 18).toList());
             } finally {
                 context.leave();
             }
