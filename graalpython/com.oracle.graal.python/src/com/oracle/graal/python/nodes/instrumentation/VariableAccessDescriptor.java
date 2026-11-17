@@ -44,8 +44,26 @@ package com.oracle.graal.python.nodes.instrumentation;
 import java.util.ArrayList;
 import java.util.List;
 
-import com.oracle.graal.python.nodes.bytecode_dsl.BytecodeDSLCodeUnit.VariableAccess;
+import com.oracle.graal.python.nodes.bytecode_dsl.BytecodeDSLCodeUnit;
+import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode.ForIterate;
+import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode.LoadCell;
+import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode.LoadFromDictOrCell;
+import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode.LoadFromDictOrGlobals;
+import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode.ReadName;
+import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode.StoreCell;
+import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode.UnpackToLocals2;
+import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode.WriteGlobal;
+import com.oracle.graal.python.nodes.bytecode_dsl.PBytecodeDSLRootNode.WriteName;
+import com.oracle.graal.python.nodes.frame.ReadGlobalOrBuiltinNode;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.bytecode.BytecodeNode;
+import com.oracle.truffle.api.bytecode.Instruction;
+import com.oracle.truffle.api.bytecode.Instruction.Argument;
+import com.oracle.truffle.api.bytecode.LocalAccessor;
+import com.oracle.truffle.api.bytecode.TagTree;
+import com.oracle.truffle.api.bytecode.TagTreeNode;
+import com.oracle.truffle.api.instrumentation.StandardTags.ReadVariableTag;
+import com.oracle.truffle.api.instrumentation.StandardTags.WriteVariableTag;
 import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.interop.InvalidArrayIndexException;
 import com.oracle.truffle.api.interop.TruffleObject;
@@ -54,8 +72,18 @@ import com.oracle.truffle.api.interop.UnsupportedMessageException;
 import com.oracle.truffle.api.library.ExportLibrary;
 import com.oracle.truffle.api.library.ExportMessage;
 import com.oracle.truffle.api.source.SourceSection;
+import com.oracle.truffle.api.strings.TruffleString;
 
-/** Immutable compiler metadata; safe to query without a language context or the GIL. */
+/**
+ * Node object of a {@link ReadVariableTag} or {@link WriteVariableTag} region. Nothing is recorded
+ * for it at compile time: the names are resolved on demand from the operands of the load or store
+ * instruction in the tag's bytecode range, against the names the code unit already holds
+ * ({@code varnames}, {@code cellvars}, {@code freevars} and name constants). The identifier
+ * locations are the tag's source layers emitted by the compiler: the enclosing statement first,
+ * then one identifier range per variable operand.
+ * <p>
+ * Instances are immutable and safe to create and query without a language context or the GIL.
+ */
 @ExportLibrary(InteropLibrary.class)
 public final class VariableAccessDescriptor implements TruffleObject {
     private final String property;
@@ -67,38 +95,176 @@ public final class VariableAccessDescriptor implements TruffleObject {
     }
 
     @TruffleBoundary
-    public static Object create(String property, boolean write, SourceSection[] sections, List<VariableAccess> accesses) {
-        SourceSection section = null;
-        for (SourceSection candidate : sections) {
-            if (candidate == null || !candidate.isAvailable()) {
+    public static Object create(TagTreeNode node, BytecodeDSLCodeUnit code) {
+        boolean write;
+        if (node.hasTag(WriteVariableTag.class)) {
+            write = true;
+        } else if (node.hasTag(ReadVariableTag.class)) {
+            write = false;
+        } else {
+            return null;
+        }
+        BytecodeNode bytecode = node.getBytecodeNode();
+        if (bytecode == null) {
+            return null;
+        }
+        List<TagTree> nested = new ArrayList<>();
+        collectNestedVariableTags(node, nested);
+
+        // Operands are emitted before the operation that consumes them, so the access is the last
+        // load or store of this region outside nested variable tags: a custom name operation, or
+        // a built-in instruction with a local argument (load.local/store.local). Instructions are
+        // identified by operation class and arguments, never by their debug names. Cell stores
+        // receive the cell from the region's first built-in local load.
+        Instruction access = null;
+        Instruction firstLocalAccess = null;
+        int returnIndex = node.getReturnBytecodeIndex();
+        for (int bci = node.getEnterBytecodeIndex(); bci <= returnIndex;) {
+            TagTree skip = enclosing(nested, bci);
+            if (skip != null) {
+                bci = bytecode.getInstruction(skip.getReturnBytecodeIndex()).getNextBytecodeIndex();
                 continue;
             }
-            for (VariableAccess access : accesses) {
-                if (access.write() == write && access.isWithin(candidate) && (section == null || isWithin(candidate, section))) {
-                    section = candidate;
-                    break;
+            Instruction instruction = bytecode.getInstruction(bci);
+            Class<?> operation = instruction.getDescriptor().getOperationClass();
+            if (operation == null) {
+                if (localSlot(instruction) >= 0) {
+                    if (firstLocalAccess == null) {
+                        firstLocalAccess = instruction;
+                    }
+                    access = instruction;
                 }
+            } else if (isAccessOperation(operation, write)) {
+                access = instruction;
             }
+            bci = instruction.getNextBytecodeIndex();
         }
-        if (section == null) {
+        if (access == null) {
             return null;
         }
-        List<VariableName> names = new ArrayList<>();
-        for (VariableAccess access : accesses) {
-            if (access.write() == write && access.isWithin(section)) {
-                names.add(new VariableName(access.name(), access.getSourceSection(section.getSource())));
+
+        String[] accessNames = resolveNames(code, bytecode, access, firstLocalAccess);
+        SourceSection[] sections = node.getSourceSections();
+        List<VariableName> result = new ArrayList<>(accessNames.length);
+        for (int i = 0; i < accessNames.length; i++) {
+            if (accessNames[i] != null) {
+                // Layer 0 is the statement; identifier layers follow in operand order.
+                SourceSection section = sections != null && i + 1 < sections.length ? sections[i + 1] : null;
+                result.add(new VariableName(accessNames[i], section));
             }
         }
-        if (names.isEmpty()) {
+        if (result.isEmpty()) {
             return null;
         }
-        Object value = names.size() == 1 ? names.get(0) : new NameArray(names.toArray());
-        return new VariableAccessDescriptor(property, value);
+        Object value = result.size() == 1 ? result.get(0) : new NameArray(result.toArray());
+        return new VariableAccessDescriptor(write ? WriteVariableTag.NAME : ReadVariableTag.NAME, value);
     }
 
-    private static boolean isWithin(SourceSection candidate, SourceSection outer) {
-        return (candidate.getStartLine() > outer.getStartLine() || candidate.getStartLine() == outer.getStartLine() && candidate.getStartColumn() >= outer.getStartColumn()) &&
-                        (candidate.getEndLine() < outer.getEndLine() || candidate.getEndLine() == outer.getEndLine() && candidate.getEndColumn() <= outer.getEndColumn());
+    private static void collectNestedVariableTags(TagTree tree, List<TagTree> result) {
+        for (TagTree child : tree.getTreeChildren()) {
+            if (child.hasTag(ReadVariableTag.class) || child.hasTag(WriteVariableTag.class)) {
+                result.add(child);
+            } else {
+                collectNestedVariableTags(child, result);
+            }
+        }
+    }
+
+    private static TagTree enclosing(List<TagTree> trees, int bci) {
+        for (TagTree tree : trees) {
+            if (bci >= tree.getEnterBytecodeIndex() && bci <= tree.getReturnBytecodeIndex()) {
+                return tree;
+            }
+        }
+        return null;
+    }
+
+    private static boolean isAccessOperation(Class<?> operation, boolean write) {
+        if (write) {
+            return operation == StoreCell.class || operation == WriteGlobal.class || operation == WriteName.class || operation == ForIterate.class ||
+                            operation == UnpackToLocals2.class;
+        } else {
+            return operation == LoadCell.class || operation == LoadFromDictOrCell.class || operation == ReadGlobalOrBuiltinNode.class ||
+                            operation == LoadFromDictOrGlobals.class || operation == ReadName.class;
+        }
+    }
+
+    /** The frame slot of a built-in local load or store, or -1. */
+    private static int localSlot(Instruction instruction) {
+        for (Argument argument : instruction.getArguments()) {
+            // Python disables block scoping, so local offsets and local indices coincide.
+            switch (argument.getKind()) {
+                case LOCAL_OFFSET:
+                    return argument.asLocalOffset();
+                case LOCAL_INDEX:
+                    return argument.asLocalIndex();
+                default:
+                    break;
+            }
+        }
+        return -1;
+    }
+
+    /** One entry per variable operand of the access; {@code null} for compiler temporaries. */
+    private static String[] resolveNames(BytecodeDSLCodeUnit code, BytecodeNode bytecode, Instruction access, Instruction firstLocalAccess) {
+        Class<?> operation = access.getDescriptor().getOperationClass();
+        if (operation == null) {
+            return new String[]{slotName(code, localSlot(access))};
+        } else if (operation == StoreCell.class) {
+            return firstLocalAccess == null ? new String[0] : new String[]{slotName(code, localSlot(firstLocalAccess))};
+        } else if (operation == LoadCell.class || operation == LoadFromDictOrCell.class) {
+            for (Argument argument : access.getArguments()) {
+                Integer index = intArgument(argument);
+                if (index != null) {
+                    return new String[]{cellOrFreeName(code, index)};
+                }
+            }
+            return new String[0];
+        }
+        // Global and name operations carry the name; ForIterate and UnpackToLocals2 take local
+        // accessors, whose info is the varnames index.
+        List<String> names = new ArrayList<>(2);
+        for (Argument argument : access.getArguments()) {
+            if (argument.getKind() != Argument.Kind.CONSTANT) {
+                continue;
+            }
+            Object constant = argument.asConstant();
+            if (constant instanceof TruffleString name) {
+                return new String[]{name.toJavaStringUncached()};
+            } else if (constant instanceof LocalAccessor local) {
+                names.add(local.getLocalInfo(bytecode) instanceof Integer index && index < code.varnames.length ? code.varnames[index].toJavaStringUncached() : null);
+            }
+        }
+        return names.toArray(new String[0]);
+    }
+
+    private static Integer intArgument(Argument argument) {
+        return switch (argument.getKind()) {
+            case INTEGER -> argument.asInteger();
+            case CONSTANT -> argument.asConstant() instanceof Integer i ? i : null;
+            default -> null;
+        };
+    }
+
+    /** Frame slot layout: varnames, then cellvars, then freevars, then compiler temporaries. */
+    private static String slotName(BytecodeDSLCodeUnit code, int slot) {
+        if (slot < 0) {
+            return null;
+        } else if (slot < code.varnames.length) {
+            return code.varnames[slot].toJavaStringUncached();
+        }
+        return cellOrFreeName(code, slot - code.varnames.length);
+    }
+
+    private static String cellOrFreeName(BytecodeDSLCodeUnit code, int index) {
+        if (index < 0) {
+            return null;
+        } else if (index < code.cellvars.length) {
+            return code.cellvars[index].toJavaStringUncached();
+        } else if (index - code.cellvars.length < code.freevars.length) {
+            return code.freevars[index - code.cellvars.length].toJavaStringUncached();
+        }
+        return null;
     }
 
     @ExportMessage

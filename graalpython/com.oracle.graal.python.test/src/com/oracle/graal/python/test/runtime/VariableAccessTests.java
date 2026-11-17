@@ -57,7 +57,6 @@ import java.util.concurrent.CompletableFuture;
 import org.graalvm.polyglot.Context;
 import org.junit.Test;
 
-import com.oracle.graal.python.builtins.objects.code.PCode;
 import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.instrumentation.InstrumentableNode;
 import com.oracle.truffle.api.instrumentation.SourceSectionFilter;
@@ -170,6 +169,63 @@ public class VariableAccessTests {
     }
 
     @Test
+    public void scopesAndNestedAccesses() throws IOException {
+        try (Context context = Context.newBuilder("python").allowAllAccess(true).build()) {
+            AnalysisInstrument instrument = context.getEngine().getInstruments().get(ID).lookup(AnalysisInstrument.class);
+            context.initialize("python");
+            context.enter();
+            try {
+                Analysis analysis = instrument.analyze(Source.newBuilder("python", """
+                                counter = 0
+                                def bump():
+                                    global counter
+                                    counter += 1
+                                class Holder:
+                                    attr = counter
+                                    def method(self):
+                                        return __class__
+                                def outer():
+                                    cell = 1
+                                    def inner():
+                                        nonlocal cell
+                                        cell += 1
+                                    first = (second := cell)
+                                    return inner, first, second
+                                class Child(Holder):
+                                    def method(self):
+                                        kept = super().method
+                                        return lambda: kept
+                                """, "scopes.py").build());
+                List<Access> accesses = analysis.accesses();
+                // module and class bodies: name stores/loads
+                assertTrue(accesses.contains(new Access("<module>", "counter", true, 1, 1, "counter")));
+                assertTrue(accesses.stream().anyMatch(a -> a.name().equals("attr") && a.write() && a.line() == 6 && a.column() == 5));
+                assertTrue(accesses.stream().anyMatch(a -> a.name().equals("counter") && !a.write() && a.line() == 6 && a.column() == 12));
+                // explicit global, augmented
+                assertTrue(accesses.contains(new Access("bump", "counter", true, 4, 5, "counter")));
+                assertTrue(accesses.contains(new Access("bump", "counter", false, 4, 5, "counter")));
+                // free variable read
+                assertTrue(accesses.contains(new Access("method", "__class__", false, 8, 16, "__class__")));
+                // cell store in the defining scope, nonlocal augmented store and load
+                assertTrue(accesses.contains(new Access("outer", "cell", true, 10, 5, "cell")));
+                assertTrue(accesses.contains(new Access("inner", "cell", true, 13, 9, "cell")));
+                assertTrue(accesses.contains(new Access("inner", "cell", false, 13, 9, "cell")));
+                // a nested walrus store is its own access, not part of the enclosing store
+                List<Access> line14 = accesses.stream().filter(a -> a.line() == 14).toList();
+                assertEquals(3, line14.size());
+                assertTrue(line14.contains(new Access("outer", "first", true, 14, 5, "first")));
+                assertTrue(line14.contains(new Access("outer", "second", true, 14, 14, "second")));
+                assertTrue(line14.contains(new Access("outer", "cell", false, 14, 24, "cell")));
+                // the store value's implicit loads (__class__, self for super()) are not the access
+                assertEquals(List.of(new Access("method", "kept", true, 18, 9, "kept"), new Access("method", "super", false, 18, 16, "super")),
+                                accesses.stream().filter(a -> a.line() == 18).toList());
+            } finally {
+                context.leave();
+            }
+        }
+    }
+
+    @Test
     public void executedTagsPreservePythonBehavior() throws IOException {
         try (Context context = Context.newBuilder("python").allowAllAccess(true).build()) {
             AnalysisInstrument instrument = context.getEngine().getInstruments().get(ID).lookup(AnalysisInstrument.class);
@@ -208,7 +264,14 @@ public class VariableAccessTests {
                                     return result
                                 """, "serialized.py").build();
                 Analysis analysis = instrument.analyzeSerialized(source);
-                assertEquals(6, analysis.accesses().stream().filter(a -> a.root().equals("serialized")).count());
+                List<Access> accesses = analysis.accesses().stream().filter(a -> a.root().equals("serialized")).toList();
+                assertEquals(6, accesses.size());
+                // The original and the unmarshaled code report the same names and locations, which
+                // are derived from the serialized bytecode and its source information.
+                for (Access access : accesses) {
+                    assertEquals(2, accesses.stream().filter(a -> a.name().equals(access.name()) && a.write() == access.write() && a.line() == access.line() &&
+                                    a.column() == access.column()).count());
+                }
             } finally {
                 context.leave();
             }
@@ -309,9 +372,6 @@ public class VariableAccessTests {
                                     cloned = types.FunctionType(marshal.loads(marshal.dumps(serialized.__code__)), globals())
                                     assert cloned(42) == 42
                                     """, "roundtrip.py").build()).call();
-                    PCode original = (PCode) env.parse(Source.newBuilder("python", "serialized.__code__", "original-code.py").build()).call();
-                    PCode cloned = (PCode) env.parse(Source.newBuilder("python", "cloned.__code__", "cloned-code.py").build()).call();
-                    assertEquals(original.getCodeUnit().variableAccesses, cloned.getCodeUnit().variableAccesses);
                 }
             } finally {
                 binding.dispose();
