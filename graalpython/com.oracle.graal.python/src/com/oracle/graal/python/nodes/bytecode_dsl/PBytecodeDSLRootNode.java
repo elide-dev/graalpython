@@ -64,7 +64,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.math.BigInteger;
-import java.util.List;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
@@ -294,8 +293,6 @@ import com.oracle.truffle.api.bytecode.BytecodeFrame;
 import com.oracle.truffle.api.bytecode.BytecodeLocation;
 import com.oracle.truffle.api.bytecode.BytecodeNode;
 import com.oracle.truffle.api.bytecode.TagTreeNode;
-import com.oracle.truffle.api.instrumentation.StandardTags.ReadVariableTag;
-import com.oracle.truffle.api.instrumentation.StandardTags.WriteVariableTag;
 import com.oracle.truffle.api.bytecode.BytecodeRootNode;
 import com.oracle.truffle.api.bytecode.ConstantOperand;
 import com.oracle.truffle.api.bytecode.ContinuationResult;
@@ -520,7 +517,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
         BytecodeDSLCodeUnit code = new BytecodeDSLCodeUnit(name, name, 0, 0, 0, 0,
                         PythonUtils.EMPTY_TRUFFLESTRING_ARRAY, PythonUtils.EMPTY_TRUFFLESTRING_ARRAY,
                         PythonUtils.EMPTY_TRUFFLESTRING_ARRAY, PythonUtils.EMPTY_TRUFFLESTRING_ARRAY,
-                        PythonUtils.EMPTY_OBJECT_ARRAY, 1, 0, 1, 0, -1, -1, -1, 0, 0, List.of(), supplier);
+                        PythonUtils.EMPTY_OBJECT_ARRAY, 1, 0, 1, 0, -1, -1, -1, 0, 0, supplier);
         PBytecodeDSLRootNode root = code.createRootNode(language, false);
         // Preserve the empty co_code of these placeholder code objects.
         root.setCode(PythonUtils.EMPTY_BYTE_ARRAY);
@@ -551,12 +548,7 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
         if (co == null) {
             return null;
         }
-        if (node.hasTag(ReadVariableTag.class)) {
-            return VariableAccessDescriptor.create(ReadVariableTag.NAME, false, node.getSourceSections(), co.variableAccesses);
-        } else if (node.hasTag(WriteVariableTag.class)) {
-            return VariableAccessDescriptor.create(WriteVariableTag.NAME, true, node.getSourceSections(), co.variableAccesses);
-        }
-        return null;
+        return VariableAccessDescriptor.create(node, co);
     }
 
     public final PythonLanguage getLanguage() {

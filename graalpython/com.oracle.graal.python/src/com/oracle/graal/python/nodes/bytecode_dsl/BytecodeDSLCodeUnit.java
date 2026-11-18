@@ -79,21 +79,6 @@ public final class BytecodeDSLCodeUnit {
     @CompilationFinal(dimensions = 1) public final TruffleString[] freevars;
     @CompilationFinal(dimensions = 1) public final Object[] constants;
 
-    /** Source-level variable accesses, independent of bytecode indices and live frames. */
-    public final List<VariableAccess> variableAccesses;
-
-    public record VariableAccess(String name, int startLine, int startColumn, int endLine, int endColumn, boolean write) {
-        public boolean isWithin(SourceSection section) {
-            return section.isAvailable() &&
-                            (startLine > section.getStartLine() || startLine == section.getStartLine() && startColumn + 1 >= section.getStartColumn()) &&
-                            (endLine < section.getEndLine() || endLine == section.getEndLine() && endColumn <= section.getEndColumn());
-        }
-
-        public SourceSection getSourceSection(Source source) {
-            return source.createSection(startLine, startColumn + 1, endLine, endColumn);
-        }
-    }
-
     public final int startLine;
     public final int startColumn;
     public final int endLine;
@@ -108,8 +93,7 @@ public final class BytecodeDSLCodeUnit {
 
     public BytecodeDSLCodeUnit(TruffleString name, TruffleString qualname, int argCount, int kwOnlyArgCount, int positionalOnlyArgCount, int flags, TruffleString[] names, TruffleString[] varnames,
                     TruffleString[] cellvars, TruffleString[] freevars, Object[] constants, int startLine, int startColumn, int endLine, int endColumn,
-                    int classcellIndex, int selfIndex, int yieldFromGeneratorIndex, int instrumentationDataIndex, int maxProfileCEventStackSize, List<VariableAccess> variableAccesses,
-                    BytecodeSupplier supplier) {
+                    int classcellIndex, int selfIndex, int yieldFromGeneratorIndex, int instrumentationDataIndex, int maxProfileCEventStackSize, BytecodeSupplier supplier) {
         assert !PythonOptions.detailedAssertionsEnabled() || isInterned(name);
         this.name = name;
         assert !PythonOptions.detailedAssertionsEnabled() || qualname == null || isInterned(qualname);
@@ -137,7 +121,6 @@ public final class BytecodeDSLCodeUnit {
         this.yieldFromGeneratorIndex = yieldFromGeneratorIndex;
         this.instrumentationDataIndex = instrumentationDataIndex;
         this.maxProfileCEventStackSize = maxProfileCEventStackSize;
-        this.variableAccesses = List.copyOf(variableAccesses);
     }
 
     public abstract static class BytecodeSupplier {
@@ -149,8 +132,7 @@ public final class BytecodeDSLCodeUnit {
     public BytecodeDSLCodeUnit withFlags(int flags) {
         return new BytecodeDSLCodeUnit(name, qualname, argCount, kwOnlyArgCount, positionalOnlyArgCount, flags,
                         names, varnames, cellvars, freevars, constants,
-                        startLine, startColumn, endLine, endColumn, classcellIndex, selfIndex, yieldFromGeneratorIndex, instrumentationDataIndex, maxProfileCEventStackSize, variableAccesses,
-                        supplier);
+                        startLine, startColumn, endLine, endColumn, classcellIndex, selfIndex, yieldFromGeneratorIndex, instrumentationDataIndex, maxProfileCEventStackSize, supplier);
     }
 
     @TruffleBoundary

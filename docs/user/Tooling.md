@@ -49,7 +49,9 @@ use Truffle's UTF-16 columns, including for non-BMP identifiers.
 For unexecuted source, attach a source-section load listener before calling the instrument
 `Env.parse(Source)` API. Retain the returned call target while collecting facts. Reading node
 objects and their name/location descriptors does not require an entered Python context or guest
-values, and supports concurrent readers. Code-unit serialization preserves this metadata.
+values, and supports concurrent readers. Names are resolved on demand from the tagged load and store
+instructions and the code object's existing name tables, so code units carry no extra metadata and
+unmarshaled code reports the same names and locations.
 
 This interface describes compiler-emitted accesses, rather than a complete source symbol index.
 It covers name expressions, assignment and augmented-assignment targets, loop targets and
