@@ -7,11 +7,25 @@ workflows from `.github/workflows`, so the workflow files cannot live here.
 The fork does not edit upstream's files, so merging from upstream cannot conflict with its CI. The
 one exception is listed at the end.
 
+## Branches
+
+| Branch | What it is |
+|---|---|
+| `master` | A copy of upstream's `master`. Nothing is merged into it; it only moves forward to upstream's commits. |
+| `develop` | The fork's main branch and the repository's default branch. Pull requests are merged here. |
+| `elide-*.x` | The fork's release branches, each on top of one upstream release. |
+
+Upstream's changes reach `develop` through a pull request that merges `master` into it. Merge that
+pull request with a merge commit, never squashed or rebased: a squash drops the link to upstream's
+history, and every later merge would conflict with it.
+
+`git diff master develop` shows what the fork changed.
+
 ## Workflows
 
 | Workflow | Runs on | What it does |
 |---|---|---|
-| `elide-ci.yml` | pull requests that are not drafts, pushes to `master` and `elide-*.x` | Upstream's tests of the native standalone, on Linux amd64 |
+| `elide-ci.yml` | pull requests that are not drafts, pushes to `develop` and `elide-*.x` | Upstream's tests of the native standalone, on Linux amd64 |
 
 The jobs are upstream's, read from `ci.jsonnet`. The selection is `ci-jobs.txt`. To run another
 upstream job, add a line there. `ci-plan` turns the file into the job filter and fails when a line
