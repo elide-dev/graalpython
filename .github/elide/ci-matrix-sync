@@ -27,13 +27,26 @@ CLEAN = """\
         run: find "${GITHUB_WORKSPACE:?}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 """
 # The runners are on a newer Ubuntu than GitHub's, for which actions/setup-python has no build of
-# the exact Python versions that upstream asks for. Ask for the newest patch release instead.
-EXTRACT = "          python3 .github/scripts/extract_matrix.py ./sjsonnet ./ci.jsonnet ${TARGET} ${JOBS} --artifact-mode non-providers > matrix.json\n"
-ANY_PATCH = """\
-          for f in artifact-matrix.json matrix.json; do
-            jq -c 'map(if .python_version then .python_version |= (split(".")[0:2] | join(".")) else . end)' "$f" > "$f.tmp"
-            mv "$f.tmp" "$f"
-          done
+# the Python versions that upstream asks for. uv has builds that do not depend on the distribution.
+SETUP_PYTHON = """\
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        if: ${{ matrix.python_version }}
+        with:
+          python-version: ${{ matrix.python_version }}
+"""
+UV_PYTHON = """\
+      - name: Set up Python
+        if: ${{ matrix.python_version }}
+        shell: bash
+        run: |
+          curl -LsSf https://astral.sh/uv/0.13.5/install.sh | env UV_INSTALL_DIR="$RUNNER_TEMP/uv" UV_NO_MODIFY_PATH=1 sh
+          version='${{ matrix.python_version }}'
+          # The exact version, or else the newest patch release of the same minor version.
+          "$RUNNER_TEMP/uv/uv" venv --clear --seed --python "$version" "$RUNNER_TEMP/python" ||
+            "$RUNNER_TEMP/uv/uv" venv --clear --seed --python "${version%.*}" "$RUNNER_TEMP/python"
+          echo "$RUNNER_TEMP/python/bin" >> "$GITHUB_PATH"
+          echo "VIRTUAL_ENV=$RUNNER_TEMP/python" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/python/bin/python" --version
 """
 # line of upstream's file -> (replacement, how often upstream's file must have it)
 EDITS = {
@@ -42,7 +55,6 @@ EDITS = {
     "    runs-on: ${{ matrix.os }}\n": ("    runs-on: %s\n" % RUNNER, 6),
     "    steps: &generate_matrix\n": ("    steps: &generate_matrix\n" + CLEAN, 1),
     "    steps: &buildsteps\n": ("    steps: &buildsteps\n" + CLEAN, 1),
-    EXTRACT: (EXTRACT + ANY_PATCH, 1),
 }
 
 
@@ -56,7 +68,10 @@ def generate():
                      "update .github/elide/ci-matrix-sync" % (found, line.strip(), expected))
     if sum("runs-on:" in line for line in lines) != 9:
         sys.exit("ci-matrix-gen.yml has a runs-on line that .github/elide/ci-matrix-sync does not know")
-    return "".join(EDITS[line][0] if line in EDITS else line for line in lines)
+    text = "".join(EDITS[line][0] if line in EDITS else line for line in lines)
+    if text.count(SETUP_PYTHON) != 1:
+        sys.exit("ci-matrix-gen.yml sets up Python in another way, update .github/elide/ci-matrix-sync")
+    return text.replace(SETUP_PYTHON, UV_PYTHON)
 
 
 def main(args):

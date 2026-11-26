@@ -3,7 +3,7 @@ name: Elide CI
 #
 # The jobs themselves stay upstream's: the selection is .github/elide/ci-jobs.txt, and
 # elide-ci-matrix.yml, which runs them, is generated from upstream's ci-matrix-gen.yml. The fork
-# edits no upstream file, and a merge from upstream brings its changes to the jobs with it.
+# edits no upstream workflow, and a merge from upstream brings its changes to the jobs with it.
 #
 # Everything runs on Elide's runners. They keep state between jobs, so pull requests from forks
 # do not run here. See .github/elide/README.md.

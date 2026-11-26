@@ -4,7 +4,8 @@ This repository is a fork of [oracle/graalpython](https://github.com/oracle/graa
 the fork adds to CI is in this folder and in workflow files named `elide-*.yml`. GitHub only reads
 workflows from `.github/workflows`, so the workflow files cannot live here.
 
-The fork does not edit upstream's files, so merging from upstream cannot conflict with its CI.
+The fork does not edit upstream's files, so merging from upstream cannot conflict with its CI. The
+one exception is listed at the end.
 
 ## Workflows
 
@@ -26,8 +27,9 @@ variable `ELIDE_CI_RUNNER` to use another label.
 
 Upstream's workflow for running the jobs, `ci-matrix-gen.yml`, names GitHub's hosted runners.
 `elide-ci.yml` therefore calls `elide-ci-matrix.yml`, a copy that `ci-matrix-sync` generates from
-upstream's file with the runner replaced and a step added that empties the workspace. Do not edit
-the copy. The `plan` job fails when it is not what the script would generate.
+upstream's file with three changes: the runner, a first step that empties the workspace, and Python
+from `uv` instead of `actions/setup-python`. The runners are on Ubuntu 26.04, for which that action
+has no build of the Python versions upstream asks for. Do not edit the copy. The `plan` job fails when it is not what the script would generate.
 
 Elide's runners keep state between jobs, so `elide-ci.yml` does not run for pull requests from
 forks. Such a pull request gets no tests until its branch is pushed to this repository.
@@ -60,3 +62,16 @@ stay identical to upstream's.
 2. If the `plan` job of `elide-ci.yml` fails at the check of `elide-ci-matrix.yml`, upstream
    changed `ci-matrix-gen.yml`: run `python3 .github/elide/ci-matrix-sync` and commit the result.
 3. If it fails at the job selection, upstream renamed or removed a job: update `ci-jobs.txt`.
+4. If the merge conflicts in one of the tag files listed below, take upstream's version and remove
+   the `linux-x86_64-github` key from the listed test again.
+
+## Tests that are switched off
+
+Upstream's tag files under `graalpython/com.oracle.graal.python.test/src/tests/unittest_tags` say
+on which platforms a standard-library test is expected to pass. A test that does not pass in this
+CI loses its `linux-x86_64-github` key there. These are the only edits the fork's CI makes to
+upstream's files:
+
+| Tag file | Test | Reason |
+| --- | --- | --- |
+| `test_asyncio.txt` | `test.test_asyncio.test_events.PollEventLoopTests.test_subprocess_close_after_finish` | hangs until the 600 s timeout, on GitHub's runners and on Elide's |
