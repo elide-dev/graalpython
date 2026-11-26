@@ -12,7 +12,7 @@ name: CodSpeed benchmarks
 # and the measurement run on self-hosted runners.
 on:
   push:
-    branches: [master, 'elide-*.x']
+    branches: [develop, 'elide-*.x']
   pull_request:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
