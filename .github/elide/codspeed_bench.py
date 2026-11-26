@@ -40,7 +40,7 @@
 # ================================
 #
 # Runs benchmarks from graalpython/com.oracle.graal.python.benchmarks with the upstream harness and
-# reports steady-state wall time to CodSpeed. Used by .github/workflows/codspeed.yml; runs on CPython.
+# reports steady-state wall time to CodSpeed. Used by .github/workflows/elide-codspeed.yml; runs on CPython.
 #
 # Every benchmark runs in its own process of the interpreter under test. The harness prints one
 # duration per iteration; the first half of the iterations is warm-up and the second half are the
