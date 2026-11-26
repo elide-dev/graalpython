@@ -71,7 +71,12 @@ def generate():
     text = "".join(EDITS[line][0] if line in EDITS else line for line in lines)
     if text.count(SETUP_PYTHON) != 1:
         sys.exit("ci-matrix-gen.yml sets up Python in another way, update .github/elide/ci-matrix-sync")
-    return text.replace(SETUP_PYTHON, UV_PYTHON)
+    text = text.replace(SETUP_PYTHON, UV_PYTHON)
+    # A job with always() keeps running when its run is cancelled, so a run that a newer commit
+    # replaced would hold the runners until all its tests are through.
+    if text.count("if: ${{ always() && ") != 5:
+        sys.exit("ci-matrix-gen.yml uses always() in another way, update .github/elide/ci-matrix-sync")
+    return text.replace("if: ${{ always() && ", "if: ${{ !cancelled() && ")
 
 
 def main(args):

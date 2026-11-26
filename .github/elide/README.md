@@ -33,8 +33,8 @@ variable `ELIDE_CI_RUNNER` to use another label.
 
 Upstream's workflow for running the jobs, `ci-matrix-gen.yml`, names GitHub's hosted runners.
 `elide-ci.yml` therefore calls `elide-ci-matrix.yml`, a copy that `ci-matrix-sync` generates from
-upstream's file with three changes: the runner, a first step that empties the workspace, and Python
-from `uv` instead of `actions/setup-python`. The runners are on Ubuntu 26.04, for which that action
+upstream's file with four changes: the runner, a first step that empties the workspace, Python
+from `uv` instead of `actions/setup-python`, and jobs that stop when their run is cancelled. The runners are on Ubuntu 26.04, for which that action
 has no build of the Python versions upstream asks for. Do not edit the copy. The `plan` job fails when it is not what the script would generate.
 
 Elide's runners keep state between jobs, so `elide-ci.yml` does not run for pull requests from

@@ -326,7 +326,7 @@ jobs:
           retention-days: 1
 
   tier1:
-    if: ${{ always() && needs.generate-tier1.result == 'success' && needs.tier1-artifacts.result == 'success' }}
+    if: ${{ !cancelled() && needs.generate-tier1.result == 'success' && needs.tier1-artifacts.result == 'success' }}
     needs: [generate-tier1, tier1-artifacts]
     runs-on: ${{ vars.ELIDE_CI_RUNNER || 'linux-amd64-cipool' }}
     strategy:
@@ -336,7 +336,7 @@ jobs:
     steps: *buildsteps
 
   tier2-artifacts:
-    if: ${{ always() && needs.generate-tier2.result == 'success' && (needs.tier1.result == 'success' || inputs.jobs_to_run) }}
+    if: ${{ !cancelled() && needs.generate-tier2.result == 'success' && (needs.tier1.result == 'success' || inputs.jobs_to_run) }}
     needs: [generate-tier2, tier1]
     runs-on: ${{ vars.ELIDE_CI_RUNNER || 'linux-amd64-cipool' }}
     strategy:
@@ -346,7 +346,7 @@ jobs:
     steps: *buildsteps
 
   tier2:
-    if: ${{ always() && needs.generate-tier2.result == 'success' && needs.tier2-artifacts.result == 'success' }}
+    if: ${{ !cancelled() && needs.generate-tier2.result == 'success' && needs.tier2-artifacts.result == 'success' }}
     needs: [generate-tier2, tier2-artifacts]
     runs-on: ${{ vars.ELIDE_CI_RUNNER || 'linux-amd64-cipool' }}
     strategy:
@@ -356,7 +356,7 @@ jobs:
     steps: *buildsteps
 
   tier3-artifacts:
-    if: ${{ always() && needs.generate-tier3.result == 'success' && (needs.tier2.result == 'success' || inputs.jobs_to_run) }}
+    if: ${{ !cancelled() && needs.generate-tier3.result == 'success' && (needs.tier2.result == 'success' || inputs.jobs_to_run) }}
     needs: [generate-tier3, tier2]
     runs-on: ${{ vars.ELIDE_CI_RUNNER || 'linux-amd64-cipool' }}
     strategy:
@@ -366,7 +366,7 @@ jobs:
     steps: *buildsteps
 
   tier3:
-    if: ${{ always() && needs.generate-tier3.result == 'success' && needs.tier3-artifacts.result == 'success' }}
+    if: ${{ !cancelled() && needs.generate-tier3.result == 'success' && needs.tier3-artifacts.result == 'success' }}
     needs: [generate-tier3, tier3-artifacts]
     runs-on: ${{ vars.ELIDE_CI_RUNNER || 'linux-amd64-cipool' }}
     strategy:
