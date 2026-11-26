@@ -2,7 +2,7 @@
 # Turns .github/elide/ci-jobs.txt into the job filter for upstream's ci-matrix-gen.yml and checks
 # that every line of it still selects a job. Used by .github/workflows/elide-ci.yml.
 #
-#   ci_plan.py <jsonnet binary>
+#   ci-plan <jsonnet binary>
 #
 # Prints the selected jobs, and writes "jobs=<regular expression>" to $GITHUB_OUTPUT when set.
 import json

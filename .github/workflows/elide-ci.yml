@@ -34,7 +34,7 @@ jobs:
           chmod +x sjsonnet
       - name: Select the upstream jobs
         id: plan
-        run: python3 .github/elide/ci_plan.py ./sjsonnet
+        run: python3 .github/elide/ci-plan ./sjsonnet
 
   abi-check:
     name: abi-check

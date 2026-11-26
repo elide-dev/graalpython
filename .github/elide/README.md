@@ -15,10 +15,17 @@ with its CI.
 
 `elide-ci.yml` calls upstream's reusable workflow `ci-matrix-gen.yml`, which reads the jobs from
 `ci.jsonnet`. The selection is `ci-jobs.txt`. To run another upstream job, add a line there.
-`ci_plan.py` turns the file into the job filter and fails when a line no longer matches a job.
+`ci-plan` turns the file into the job filter and fails when a line no longer matches a job.
 
 The native standalone for the tests is built by `elide-ci.yml` itself. Upstream's job for it
 fails on GitHub; the comment in the workflow says why.
+
+## Scripts have no file extension
+
+Upstream's style job requires an Oracle copyright header in every `.py`, `.sh`, `.java`, `.c` and
+`.h` file of the repository. The exceptions are listed in an upstream file, which the fork does not
+edit. The scripts in this folder are therefore Python files without the `.py` extension; run them
+with `python3 <file>`.
 
 ## Upstream workflows that are switched off
 
