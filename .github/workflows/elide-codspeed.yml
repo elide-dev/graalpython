@@ -97,7 +97,7 @@ jobs:
           GRAALPY="$RUNNER_TEMP/GRAALPY_NATIVE_STANDALONE/bin/graalpy"
           "$GRAALPY" -c 'import sys; print(sys.version)'
           # The last two call C API functions that the public headers do not declare.
-          python3 .github/elide/codspeed_bench.py --python "$GRAALPY" \
+          python3 .github/elide/codspeed-bench --python "$GRAALPY" \
             --bench '^micro-native/(c-instantiate-large|c-to-c|c-call-method-obj-args)$'
 
   walltime:
@@ -136,7 +136,7 @@ jobs:
           mode: walltime
           runner-version: "5.2.1"
           run: >-
-            python3 .github/elide/codspeed_bench.py
+            python3 .github/elide/codspeed-bench
             --python "${{ runner.temp }}/GRAALPY_NATIVE_STANDALONE/bin/graalpy"
             --suite micro-native meso
             --output "${{ env.BENCH_OUTPUT }}"
