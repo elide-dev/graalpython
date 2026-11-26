@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Opens the pull request that merges upstream's commits into the fork's main branch, unless one is
+# open already. Used by .github/workflows/elide-upstream-sync.yml after upstream-sync.
+#
+#   upstream-sync-pr <sync branch> <upstream commit> <upstream url> <main branch>
+#
+# Needs GH_TOKEN and GITHUB_REPOSITORY (owner/name). With DRY_RUN=1 it prints the request instead
+# of sending it.
+set -euo pipefail
+
+branch=$1
+commit=$2
+upstream_url=$3
+main=$4
+
+api="https://api.github.com/repos/$GITHUB_REPOSITORY/pulls"
+auth=(-H "Authorization: Bearer ${GH_TOKEN:-}" -H "Accept: application/vnd.github+json")
+
+body="Merges upstream's \`master\` at $upstream_url/commit/$commit into \`$main\`.
+
+Merge this pull request with a merge commit. Do not squash or rebase it: that drops the link to upstream's history, and every later merge from upstream would conflict with it.
+
+If it conflicts, resolve the conflict on the branch \`$branch\`. \`.github/elide/README.md\` says what to check after a merge from upstream."
+
+request=$(jq -n --arg title "Merge upstream master (${commit:0:10})" --arg head "$branch" \
+                --arg base "$main" --arg body "$body" \
+                '{title: $title, head: $head, base: $base, body: $body}')
+
+if [ -n "${DRY_RUN:-}" ]; then
+  echo "$request"
+  exit 0
+fi
+
+open=$(curl -fsS "${auth[@]}" "$api?state=open&base=$main&head=${GITHUB_REPOSITORY%%/*}:$branch" | jq length)
+if [ "$open" != "0" ]; then
+  echo "A pull request for $branch is already open"
+  exit 0
+fi
+
+curl -fsS "${auth[@]}" -X POST "$api" -d "$request" | jq -r '.html_url'

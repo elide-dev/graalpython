@@ -15,9 +15,23 @@ one exception is listed at the end.
 | `develop` | The fork's main branch and the repository's default branch. Pull requests are merged here. |
 | `elide-*.x` | The fork's release branches, each on top of one upstream release. |
 
-Upstream's changes reach `develop` through a pull request that merges `master` into it. Merge that
+Upstream's changes reach `develop` through a pull request that merges them into it. Merge that
 pull request with a merge commit, never squashed or rebased: a squash drops the link to upstream's
 history, and every later merge would conflict with it.
+
+`elide-upstream-sync.yml` does the routine part every Monday, and when started by hand:
+
+1. It moves `master` forward to upstream's `master`. It fails if `master` has a commit that
+   upstream does not have.
+2. If `develop` lacks some of upstream's commits, it pushes them as the branch
+   `sync/upstream-<commit>` and opens a pull request from it into `develop`. Resolve conflicts on
+   that branch, not on `master`.
+
+The workflow needs the repository secret `ELIDE_SYNC_TOKEN`, a token that may write contents, pull
+requests and workflows of this repository. Without it the workflow fails at its first check.
+
+A sync pull request that is still open when upstream moves on stays as it is, and the next run
+opens another one for the newer commit. Close the older one.
 
 `git diff master develop` shows what the fork changed.
 
@@ -25,6 +39,7 @@ history, and every later merge would conflict with it.
 
 | Workflow | Runs on | What it does |
 |---|---|---|
+| `elide-upstream-sync.yml` | Mondays, or started by hand | Moves `master` to upstream's `master` and opens the pull request into `develop` |
 | `elide-ci.yml` | pull requests that are not drafts, pushes to `develop` and `elide-*.x` | Upstream's tests of the native standalone, on Linux amd64 |
 
 The jobs are upstream's, read from `ci.jsonnet`. The selection is `ci-jobs.txt`. To run another
