@@ -48,3 +48,16 @@ stay identical to upstream's.
 
 1. Look at the Actions page for workflows that upstream added. They arrive enabled.
 2. If the `plan` job of `elide-ci.yml` fails, upstream renamed or removed a job: update `ci-jobs.txt`.
+3. If the merge conflicts in one of the tag files listed below, take upstream's version and remove
+   the `linux-x86_64-github` key from the listed test again.
+
+## Tests switched off for GitHub's runners
+
+Upstream's tag files under `graalpython/com.oracle.graal.python.test/src/tests/unittest_tags` say
+on which platforms a standard-library test is expected to pass. A test that does not pass on
+GitHub's Linux amd64 runners loses its `linux-x86_64-github` key there. These are the only edits
+the fork's CI makes to upstream's files:
+
+| Tag file | Test | Reason |
+| --- | --- | --- |
+| `test_asyncio.txt` | `test.test_asyncio.test_events.PollEventLoopTests.test_subprocess_close_after_finish` | hangs until the 600 s timeout, twice in a row |
