@@ -1,0 +1,20 @@
+# Upstream CI jobs (from ci.jsonnet) that .github/workflows/elide-ci.yml runs.
+# One regular expression per line, matched against the whole job name. Every line must match at
+# least one job, so a job that upstream renames or removes fails the plan job instead of silently
+# no longer running.
+
+# Style checks. Also builds the JVM standalone that python-unittest runs on.
+style-gate-linux-amd64-jdk-latest
+
+# GraalPy's own Python tests, including the C API tests, on the JVM standalone.
+python-unittest-gate-linux-amd64-jdk-latest
+
+# CPython's standard library tests on the native standalone.
+python-tagged-unittest-gate-batch\d+-linux-amd64-jdk-latest
+
+# Tests with several contexts in one process, on the native standalone.
+python-unittest-multi-context-gate-linux-amd64-jdk-latest
+
+# Java unit tests. The maven job builds the GraalVM they run on.
+python-junit-maven-gate-linux-amd64-jdk-latest
+python-junit-gate-linux-amd64-jdk-latest
