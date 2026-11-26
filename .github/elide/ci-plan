@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Turns .github/elide/ci-jobs.txt into the job filter for upstream's ci-matrix-gen.yml and checks
+# Turns .github/elide/ci-jobs.txt into the job filter for elide-ci-matrix.yml and checks
 # that every line of it still selects a job. Used by .github/workflows/elide-ci.yml.
 #
 #   ci-plan <jsonnet binary>
@@ -36,6 +36,11 @@ def main(jsonnet_bin):
         requires = job.get("require_artifact")
         print("%s  %-64s %s%s" % (tier, name, "provides %s " % provides[0] if provides else "",
                                  "requires %s" % requires[0] if requires else ""))
+
+    # elide-ci-matrix.yml runs every job on Elide's Linux amd64 runners, whatever the job asks for.
+    foreign = sorted(name for name, (_, job) in selected.items() if job["os"] != "ubuntu-24.04")
+    if foreign:
+        sys.exit("jobs that are not for Linux amd64: " + ", ".join(foreign))
 
     unmatched = [p for p in patterns if not any(re.fullmatch(p, name) for name in selected)]
     if unmatched:

@@ -1,9 +1,12 @@
 name: Elide CI
 # The tests this fork runs on its changes: a selection of upstream's CI jobs, on Linux amd64.
 #
-# The jobs themselves stay upstream's. This workflow calls upstream's ci-matrix-gen.yml with the
-# selection in .github/elide/ci-jobs.txt, so the fork edits no upstream file and a merge from
-# upstream brings its changes to the jobs with it. See .github/elide/README.md.
+# The jobs themselves stay upstream's: the selection is .github/elide/ci-jobs.txt, and
+# elide-ci-matrix.yml, which runs them, is generated from upstream's ci-matrix-gen.yml. The fork
+# edits no upstream file, and a merge from upstream brings its changes to the jobs with it.
+#
+# Everything runs on Elide's runners. They keep state between jobs, so pull requests from forks
+# do not run here. See .github/elide/README.md.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -22,12 +25,25 @@ concurrency:
 jobs:
   plan:
     name: plan
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: ubuntu-24.04
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.draft == false &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ${{ vars.ELIDE_CI_RUNNER || 'linux-amd64-cipool' }}
     outputs:
       jobs: ${{ steps.plan.outputs.jobs }}
     steps:
+      - name: Clean workspace
+        run: find "${GITHUB_WORKSPACE:?}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Describe the runner
+        run: |
+          cat /etc/os-release || true
+          nproc; free -g | head -2; df -h . | tail -1
+          for tool in python3 cc jq mvn cmake; do "$tool" --version 2>&1 | head -1 || echo "$tool: missing"; done
+          sudo -n true && echo "sudo: yes" || echo "sudo: no"
+      - name: Check that elide-ci-matrix.yml matches upstream's workflow
+        run: python3 .github/elide/ci-matrix-sync --check
       - name: Download sjsonnet
         run: |
           curl -fsSL -o sjsonnet https://github.com/databricks/sjsonnet/releases/download/0.5.7/sjsonnet-0.5.7-linux-x86_64
@@ -39,8 +55,10 @@ jobs:
   abi-check:
     name: abi-check
     needs: plan
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.ELIDE_CI_RUNNER || 'linux-amd64-cipool' }}
     steps:
+      - name: Clean workspace
+        run: find "${GITHUB_WORKSPACE:?}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Install libabigail
         run: |
@@ -60,11 +78,11 @@ jobs:
   # The native standalone that the tagged and multi-context tests run on, under the artifact name
   # those jobs download. Upstream's own job for it, python-svm-build-gate-linux-amd64-jdk-latest,
   # is not used: after the build it checks a host inlining log that the quick build mode of
-  # GitHub runs (-Ob) does not write, so it fails. This job runs the same gate without that check.
+  # CI runs on GitHub (-Ob) does not write, so it fails. This job runs the same gate without that check.
   native-standalone:
     name: build native standalone
     needs: plan
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.ELIDE_CI_RUNNER || 'linux-amd64-cipool' }}
     timeout-minutes: 90
     env:
       # As in upstream's job: assertions on, quick build mode.
@@ -79,6 +97,8 @@ jobs:
       LANG: en_US.UTF-8
       PYTHONIOENCODING: utf-8
     steps:
+      - name: Clean workspace
+        run: find "${GITHUB_WORKSPACE:?}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           path: main
@@ -126,7 +146,7 @@ jobs:
   tests:
     name: tests
     needs: [plan, native-standalone]
-    uses: ./.github/workflows/ci-matrix-gen.yml
+    uses: ./.github/workflows/elide-ci-matrix.yml
     with:
       jobs_to_run: ${{ needs.plan.outputs.jobs }}
       logs_retention_days: 3

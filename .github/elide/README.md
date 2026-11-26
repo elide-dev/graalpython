@@ -4,8 +4,7 @@ This repository is a fork of [oracle/graalpython](https://github.com/oracle/graa
 the fork adds to CI is in this folder and in workflow files named `elide-*.yml`. GitHub only reads
 workflows from `.github/workflows`, so the workflow files cannot live here.
 
-The fork does not edit upstream's files under `.github`, so merging from upstream cannot conflict
-with its CI.
+The fork does not edit upstream's files, so merging from upstream cannot conflict with its CI.
 
 ## Workflows
 
@@ -13,12 +12,25 @@ with its CI.
 |---|---|---|
 | `elide-ci.yml` | pull requests that are not drafts, pushes to `master` and `elide-*.x` | A selection of upstream's test jobs on Linux amd64 |
 
-`elide-ci.yml` calls upstream's reusable workflow `ci-matrix-gen.yml`, which reads the jobs from
-`ci.jsonnet`. The selection is `ci-jobs.txt`. To run another upstream job, add a line there.
-`ci-plan` turns the file into the job filter and fails when a line no longer matches a job.
+The jobs are upstream's, read from `ci.jsonnet`. The selection is `ci-jobs.txt`. To run another
+upstream job, add a line there. `ci-plan` turns the file into the job filter and fails when a line
+no longer matches a job.
 
 The native standalone for the tests is built by `elide-ci.yml` itself. Upstream's job for it
 fails on GitHub; the comment in the workflow says why.
+
+## Runners
+
+All jobs run on Elide's runners, the pool with the label `linux-amd64-cipool`. Set the repository
+variable `ELIDE_CI_RUNNER` to use another label.
+
+Upstream's workflow for running the jobs, `ci-matrix-gen.yml`, names GitHub's hosted runners.
+`elide-ci.yml` therefore calls `elide-ci-matrix.yml`, a copy that `ci-matrix-sync` generates from
+upstream's file with the runner replaced and a step added that empties the workspace. Do not edit
+the copy. The `plan` job fails when it is not what the script would generate.
+
+Elide's runners keep state between jobs, so `elide-ci.yml` does not run for pull requests from
+forks. Such a pull request gets no tests until its branch is pushed to this repository.
 
 ## Scripts have no file extension
 
@@ -42,22 +54,9 @@ stay identical to upstream's.
 | Weekly Downstream Tests | `downstream-tests.yml` | Mondays |
 | Test on exotic platforms | `platforms-tests.yml` | Mondays |
 
-`ci-matrix-gen.yml` must stay enabled: `elide-ci.yml` calls it.
-
 ## After merging from upstream
 
 1. Look at the Actions page for workflows that upstream added. They arrive enabled.
-2. If the `plan` job of `elide-ci.yml` fails, upstream renamed or removed a job: update `ci-jobs.txt`.
-3. If the merge conflicts in one of the tag files listed below, take upstream's version and remove
-   the `linux-x86_64-github` key from the listed test again.
-
-## Tests switched off for GitHub's runners
-
-Upstream's tag files under `graalpython/com.oracle.graal.python.test/src/tests/unittest_tags` say
-on which platforms a standard-library test is expected to pass. A test that does not pass on
-GitHub's Linux amd64 runners loses its `linux-x86_64-github` key there. These are the only edits
-the fork's CI makes to upstream's files:
-
-| Tag file | Test | Reason |
-| --- | --- | --- |
-| `test_asyncio.txt` | `test.test_asyncio.test_events.PollEventLoopTests.test_subprocess_close_after_finish` | hangs until the 600 s timeout, twice in a row |
+2. If the `plan` job of `elide-ci.yml` fails at the check of `elide-ci-matrix.yml`, upstream
+   changed `ci-matrix-gen.yml`: run `python3 .github/elide/ci-matrix-sync` and commit the result.
+3. If it fails at the job selection, upstream renamed or removed a job: update `ci-jobs.txt`.
