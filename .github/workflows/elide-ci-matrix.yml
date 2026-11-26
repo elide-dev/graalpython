@@ -54,6 +54,10 @@ jobs:
         run: |
           python3 .github/scripts/extract_matrix.py ./sjsonnet ./ci.jsonnet ${TARGET} ${JOBS} --artifact-mode providers > artifact-matrix.json
           python3 .github/scripts/extract_matrix.py ./sjsonnet ./ci.jsonnet ${TARGET} ${JOBS} --artifact-mode non-providers > matrix.json
+          for f in artifact-matrix.json matrix.json; do
+            jq -c 'map(if .python_version then .python_version |= (split(".")[0:2] | join(".")) else . end)' "$f" > "$f.tmp"
+            mv "$f.tmp" "$f"
+          done
           cat artifact-matrix.json
           cat matrix.json
           echo "artifact_matrix=$(cat artifact-matrix.json)" >> $GITHUB_OUTPUT

@@ -26,6 +26,15 @@ CLEAN = """\
         shell: bash
         run: find "${GITHUB_WORKSPACE:?}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 """
+# The runners are on a newer Ubuntu than GitHub's, for which actions/setup-python has no build of
+# the exact Python versions that upstream asks for. Ask for the newest patch release instead.
+EXTRACT = "          python3 .github/scripts/extract_matrix.py ./sjsonnet ./ci.jsonnet ${TARGET} ${JOBS} --artifact-mode non-providers > matrix.json\n"
+ANY_PATCH = """\
+          for f in artifact-matrix.json matrix.json; do
+            jq -c 'map(if .python_version then .python_version |= (split(".")[0:2] | join(".")) else . end)' "$f" > "$f.tmp"
+            mv "$f.tmp" "$f"
+          done
+"""
 # line of upstream's file -> (replacement, how often upstream's file must have it)
 EDITS = {
     "name: Generate CI Matrix from ci.jsonnet\n": (HEADER, 1),
@@ -33,6 +42,7 @@ EDITS = {
     "    runs-on: ${{ matrix.os }}\n": ("    runs-on: %s\n" % RUNNER, 6),
     "    steps: &generate_matrix\n": ("    steps: &generate_matrix\n" + CLEAN, 1),
     "    steps: &buildsteps\n": ("    steps: &buildsteps\n" + CLEAN, 1),
+    EXTRACT: (EXTRACT + ANY_PATCH, 1),
 }
 
 
