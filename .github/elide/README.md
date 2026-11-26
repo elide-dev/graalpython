@@ -11,14 +11,20 @@ one exception is listed at the end.
 
 | Workflow | Runs on | What it does |
 |---|---|---|
-| `elide-ci.yml` | pull requests that are not drafts, pushes to `master` and `elide-*.x` | A selection of upstream's test jobs on Linux amd64 |
+| `elide-ci.yml` | pull requests that are not drafts, pushes to `master` and `elide-*.x` | Upstream's tests of the native standalone, on Linux amd64 |
 
 The jobs are upstream's, read from `ci.jsonnet`. The selection is `ci-jobs.txt`. To run another
 upstream job, add a line there. `ci-plan` turns the file into the job filter and fails when a line
 no longer matches a job.
 
-The native standalone for the tests is built by `elide-ci.yml` itself. Upstream's job for it
-fails on GitHub; the comment in the workflow says why.
+The fork is about the native build of GraalPy, so only jobs that test the native standalone are
+selected: no style checks, no tests on the JVM standalone and no Java unit tests.
+
+Two jobs are written out in `elide-ci.yml` instead of selected, because upstream's versions do not
+work on GitHub. The comments in the workflow say why.
+
+- The build of the native standalone that all tests run on.
+- GraalPy's own Python tests, including the C API tests, on the native standalone.
 
 ## Runners
 
@@ -36,8 +42,8 @@ forks. Such a pull request gets no tests until its branch is pushed to this repo
 
 ## Scripts have no file extension
 
-Upstream's style job requires an Oracle copyright header in every `.py`, `.sh`, `.java`, `.c` and
-`.h` file of the repository. The exceptions are listed in an upstream file, which the fork does not
+Upstream's style job, which this CI does not run but upstream does, requires an Oracle copyright
+header in every `.py`, `.sh`, `.java`, `.c` and `.h` file of the repository. The exceptions are listed in an upstream file, which the fork does not
 edit. The scripts in this folder are therefore Python files without the `.py` extension; run them
 with `python3 <file>`.
 
