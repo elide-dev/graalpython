@@ -42,6 +42,9 @@ jobs:
           nproc; free -g | head -2; df -h . | tail -1
           for tool in python3 cc jq mvn cmake; do "$tool" --version 2>&1 | head -1 || echo "$tool: missing"; done
           sudo -n true && echo "sudo: yes" || echo "sudo: no"
+          # The time-zone tests compare the system's time-zone data with the data built into GraalPy.
+          dpkg-query -W tzdata || true
+          grep -h ' tzdata' /var/log/dpkg.log /var/log/dpkg.log.1 2>/dev/null | tail -5 || true
       - name: Check that elide-ci-matrix.yml matches upstream's workflow
         run: python3 .github/elide/ci-matrix-sync --check
       - name: Download sjsonnet
