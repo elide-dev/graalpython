@@ -172,6 +172,9 @@ def run_one(python, bench, min_iterations, timeout):
     cmd = [python, HARNESS, bench["file"], "-i", str(iterations)] + bench["options"] + bench["workload"]
     # With CI set the harness stops early once long iterations look stable; every iteration is wanted here.
     env = {k: v for k, v in os.environ.items() if k != "CI"}
+    # Some C API benchmarks call functions that the public headers do not declare. GCC 14 and
+    # clang 16 made that an error; it was a warning when the benchmarks were written.
+    env["CFLAGS"] = (env.get("CFLAGS", "") + " -Wno-error=implicit-function-declaration").strip()
     proc = subprocess.Popen(cmd, cwd=os.path.dirname(bench["file"]), env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, errors="replace")
     try:
@@ -216,8 +219,13 @@ def main():
     parser.add_argument("--min-iterations", type=int, default=MIN_ITERATIONS)
     parser.add_argument("--timeout", type=int, default=900, help="seconds per benchmark process")
     parser.add_argument("--output", help="directory for walltime-summary.json")
+    parser.add_argument("--defer-failures", action="store_true",
+                        help="exit 0 when a benchmark fails, so that the others are still reported; "
+                             "the failures are in walltime-summary.json")
     parser.add_argument("--list", action="store_true", help="print the benchmarks and exit")
     args = parser.parse_args()
+    if args.defer_failures and not args.output:
+        parser.error("--defer-failures needs --output")
     if args.min_iterations < 4:
         parser.error("--min-iterations must be at least 4: two samples are the minimum")
 
@@ -260,7 +268,9 @@ def main():
         with open(os.path.join(args.output, "walltime-summary.json"), "w") as f:
             json.dump({"measured": summary, "failed": failed}, f, indent=1)
     print("%d measured, %d failed%s" % (measured, len(failed), ": " + ", ".join(failed) if failed else ""))
-    return 1 if failed or not measured else 0
+    if not measured:
+        return 1
+    return 1 if failed and not args.defer_failures else 0
 
 
 if __name__ == "__main__":

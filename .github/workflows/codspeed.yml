@@ -140,6 +140,17 @@ jobs:
             --python "${{ runner.temp }}/GRAALPY_NATIVE_STANDALONE/bin/graalpy"
             --suite micro-native meso
             --output "${{ env.BENCH_OUTPUT }}"
+            --defer-failures
+
+      # A failed benchmark does not stop the others from being reported, but it fails the job.
+      - name: Fail on failed benchmarks
+        run: |
+          python3 - "$BENCH_OUTPUT/walltime-summary.json" <<'EOF'
+          import json, sys
+          failed = json.load(open(sys.argv[1]))["failed"]
+          if failed:
+              sys.exit("failed benchmarks: " + ", ".join(failed))
+          EOF
 
       # Independent of the upload to CodSpeed.
       - name: Keep the measurements
