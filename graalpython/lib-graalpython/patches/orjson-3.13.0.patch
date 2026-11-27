@@ -286,18 +286,28 @@ index 5ecc624..64b4f0d 100644
  #[inline]
  fn reverse_pydict_incref(key: *mut pyo3_ffi::PyObject, value: *mut pyo3_ffi::PyObject) {
      unsafe {
-@@ -32,13 +32,13 @@ fn reverse_pydict_incref(key: *mut pyo3_ffi::PyObject, value: *mut pyo3_ffi::PyO
+@@ -32,13 +32,24 @@ fn reverse_pydict_incref(key: *mut pyo3_ffi::PyObject, value: *mut pyo3_ffi::PyO
      }
  }
  
--#[cfg(Py_GIL_DISABLED)]
-+#[cfg(any(Py_GIL_DISABLED, not(CPython)))]
+ #[cfg(Py_GIL_DISABLED)]
  #[inline]
  fn reverse_pydict_incref(_: *mut pyo3_ffi::PyObject, value: *mut pyo3_ffi::PyObject) {
      unsafe { crate::ffi::Py_DECREF(value) }
  }
  
 -#[cfg(not(Py_3_12))]
++// GraalPy: get_unicode_key returns a new reference (no key cache), and PyDict_SetItem
++// takes its own references, so release both the key and the value.
++#[cfg(not(CPython))]
++#[inline]
++fn reverse_pydict_incref(key: *mut pyo3_ffi::PyObject, value: *mut pyo3_ffi::PyObject) {
++    unsafe {
++        crate::ffi::Py_DECREF(key);
++        crate::ffi::Py_DECREF(value);
++    }
++}
++
 +#[cfg(all(CPython, not(Py_3_12)))]
  #[inline]
  fn reverse_pydict_incref(key: *mut pyo3_ffi::PyObject, value: *mut pyo3_ffi::PyObject) {
