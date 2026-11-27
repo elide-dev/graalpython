@@ -42,14 +42,72 @@ work on GitHub. The comments in the workflow say why.
 
 ## Benchmarks
 
-`elide-codspeed.yml` measures the wall time of GraalPy's C API micro benchmarks and pure Python
-meso benchmarks on a native standalone and reports it to CodSpeed
+`elide-codspeed.yml` measures the wall time of GraalPy's C API micro benchmarks, its pure Python
+meso benchmarks and benchmarks of real packages on a native standalone and reports it to CodSpeed
 (https://app.codspeed.io/elide-dev/graalpython). It runs on pushes to `develop` and `elide-*.x`,
 and on pull requests that carry the label `perf:bench`. `codspeed-bench` is the driver that runs
 the benchmarks and writes the results.
 
-The standalone is built on the pool. The measurement runs on the benchmark runner with the label
-`linux-amd64-bench`, which is shared between repositories, so only the measurement runs there.
+The standalone and the packages' wheels are built on the pool. The measurement runs on the
+benchmark runner with the label `linux-amd64-bench`, which is shared between repositories, so only
+the measurement runs there.
+
+### Package benchmarks
+
+The suite `packages` of `codspeed-bench` measures pydantic, orjson, pandas, numpy and lxml. Its
+files are in `benchmarks/packages`, not in upstream's benchmark folders:
+
+| Benchmark | What one iteration does |
+|---|---|
+| `pydantic-json` | `validate_json` and `dump_json` of a list of nested models with a discriminated union, and `model_dump_json`/`model_validate_json` per model |
+| `pydantic-models` | `model_validate` from dicts and `model_dump`, `model_validate_json` and `model_dump_json`, of nested models with a field validator |
+| `orjson-roundtrip` | `dumps` and `loads` of a nested document, also indented with sorted keys, and `dumps` of dataclasses |
+| `pandas-csv` | `read_csv` of an in-memory CSV (dates, a categorical column), a filter, `to_csv`, a groupby |
+| `pandas-str` | `Series.str` methods (strip, lower, contains, extract, split, replace, title) and `to_datetime` |
+| `pandas-groupby-merge` | merges of a fact table with two dimension tables, groupby aggregations, `pivot_table`, a grouped rank |
+| `pandas-apply` | `DataFrame.apply(axis=1)`, `Series.apply` and `Series.map` with Python functions, `iterrows`, `itertuples` |
+| `numpy-small-ops` | a particle simulation on many 3-element arrays from a Python loop |
+| `numpy-vectorized` | ufuncs, reductions, sort, percentile, an FFT and a small linear solve on large arrays |
+| `lxml-xpath` | parse, XPath queries, edits and serialization of an XML document, and `lxml.html` parsing of a table |
+
+Each file is in the format of upstream's `harness.py`: `__setup__(size)` builds the input from a
+fixed seed and is not measured, `__benchmark__(size)` is one measured iteration. Every iteration
+compares its result with `EXPECTED[size]` in the file and fails the benchmark when it differs;
+floats are compared with a relative tolerance, because they differ in the last digits between
+platforms. `benchmarks.txt` lists the benchmarks with their harness arguments (iterations and size).
+The size is part of the name on CodSpeed. The files are Python without the `.py` extension, like the
+scripts in this folder (see below); the harness loads a benchmark by its path.
+
+To add a benchmark:
+
+1. Write the file in `benchmarks/packages` and add a line to `benchmarks.txt`. Size it so that an
+   iteration takes about 0.2 to 3 s on GraalPy, and give it enough iterations that the second half,
+   which is what is reported, is warmed up (30 for the current ones).
+2. Run it with CPython, for example
+   `python3 graalpython/com.oracle.graal.python.benchmarks/python/harness.py .github/elide/benchmarks/packages/<name> -i 4 <size>`
+   in a virtual environment with `benchmarks/packages/requirements.txt` installed. For a size
+   without an entry in `EXPECTED`, the first iteration prints its result and the others are compared
+   with it; copy it into `EXPECTED`.
+3. `python3 .github/elide/codspeed-bench --python <that environment's python> --suite packages --bench <name>`
+   runs it as the workflow does.
+4. A new package goes into `benchmarks/packages/requirements.txt` with all its dependencies pinned.
+   A package with compiled code also needs a build line in the `wheels` job of `elide-codspeed.yml`.
+
+The versions are pinned in `benchmarks/packages/requirements.txt`. The compiled packages are built
+from source with GraalPy's pip, which applies GraalPy's patch for the version from
+`graalpython/lib-graalpython/patches/metadata.toml`; a new version needs a patch there or none at
+all. A version change changes the measurement, so make it in a pull request of its own.
+
+The `wheels` job builds the wheels on the pool with the standalone of the run, every run, without a
+cache: numpy without an external BLAS or LAPACK (numpy's own slower fallback routines, which is why
+the linear algebra in `numpy-vectorized` is small), pandas against that numpy, lxml with libxml2 and
+libxslt linked in statically, pydantic-core and orjson with a Rust toolchain installed into the
+job's temporary directory. The pure Python packages come from PyPI as wheels. The job fails when a
+wheel needs a shared library other than glibc, libstdc++ and libgcc_s, because the benchmark host
+has only its base libraries and nothing can be installed there. `check` installs the wheels without
+a network and runs every package benchmark for four iterations; `walltime` installs them into a
+virtual environment in the job's temporary directory and runs the suite with that environment's
+interpreter (`--suite-python`).
 
 ## Runners
 
@@ -70,7 +128,7 @@ forks. Such a pull request gets no tests until its branch is pushed to this repo
 Upstream's style job, which this CI does not run but upstream does, requires an Oracle copyright
 header in every `.py`, `.sh`, `.java`, `.c` and `.h` file of the repository. The exceptions are listed in an upstream file, which the fork does not
 edit. The scripts in this folder are therefore Python files without the `.py` extension; run them
-with `python3 <file>`.
+with `python3 <file>`. The same holds for the benchmark files in `benchmarks`.
 
 ## Upstream workflows that are switched off
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-# Runs benchmarks from graalpython/com.oracle.graal.python.benchmarks with the upstream harness and
-# reports steady-state wall time to CodSpeed. Used by .github/workflows/elide-codspeed.yml; runs on CPython.
+# Runs benchmarks from graalpython/com.oracle.graal.python.benchmarks, and the fork's own benchmarks
+# from .github/elide/benchmarks, with the upstream harness and reports steady-state wall time to
+# CodSpeed. Used by .github/workflows/elide-codspeed.yml; runs on CPython.
 #
 # Every benchmark runs in its own process of the interpreter under test. The harness prints one
 # duration per iteration; the first half of the iterations is warm-up and the second half are the
@@ -26,11 +27,20 @@ BENCH_REL = "graalpython/com.oracle.graal.python.benchmarks/python"
 HARNESS = os.path.join(REPO, BENCH_REL, "harness.py")
 PARAMS = os.path.join(REPO, "mx.graalpython", "mx_graalpython_bench_param.py")
 
+OWN_BENCH_REL = ".github/elide/benchmarks"
+
 # suite name -> (table in mx_graalpython_bench_param.py, directory under BENCH_REL)
 SUITES = {
     "micro-native": ("MICRO_NATIVE_BENCHMARKS", "micro"),
     "meso": ("MESO_BENCHMARKS", "meso"),
     "micro": ("MICRO_BENCHMARKS", "micro"),
+}
+# The fork's suites: suite name -> directory under OWN_BENCH_REL. It holds the benchmark files (Python
+# without the .py extension; the harness loads them by path) and their table, benchmarks.txt.
+OWN_SUITES = {
+    # Benchmarks of real packages. They need an interpreter that has the packages of
+    # requirements.txt in that directory installed, see --suite-python.
+    "packages": "packages",
 }
 DEFAULT_SUITES = ["micro-native", "meso"]
 
@@ -64,6 +74,17 @@ def load_table(name):
     return getattr(module, name)
 
 
+def load_own_table(directory):
+    """Reads benchmarks.txt of a suite of the fork: lines of a name and its harness arguments."""
+    table = {}
+    with open(os.path.join(REPO, OWN_BENCH_REL, directory, "benchmarks.txt")) as f:
+        for line in f:
+            fields = line.split("#", 1)[0].split()
+            if fields:
+                table[fields[0]] = fields[1:]
+    return table
+
+
 def split_args(harness_args):
     """-> (iterations, other harness options, workload arguments)"""
     iterations, options, workload = 1, [], []
@@ -87,18 +108,23 @@ def split_args(harness_args):
 
 def benchmarks(suites, pattern):
     for suite in suites:
-        table, directory = SUITES[suite]
-        for name, harness_args in load_table(table).items():
+        if suite in OWN_SUITES:
+            directory = "%s/%s" % (OWN_BENCH_REL, OWN_SUITES[suite])
+            table, extension = load_own_table(OWN_SUITES[suite]), ""
+        else:
+            directory = "%s/%s" % (BENCH_REL, SUITES[suite][1])
+            table, extension = load_table(SUITES[suite][0]), ".py"
+        for name, harness_args in table.items():
             ident = "%s/%s" % (suite, name)
             if pattern and not re.search(pattern, ident):
                 continue
             iterations, options, workload = split_args(list(harness_args))
-            rel = "%s/%s/%s.py" % (BENCH_REL, directory, name)
+            rel = "%s/%s%s" % (directory, name, extension)
             # The identity CodSpeed keeps the history under. The workload size is part of it, the
             # iteration count is not.
             uri = "%s::%s%s" % (rel, ident, "[%s]" % ",".join(workload) if workload else "")
-            yield {"id": ident, "uri": uri, "file": os.path.join(REPO, rel), "iterations": iterations,
-                   "options": options, "workload": workload}
+            yield {"id": ident, "suite": suite, "uri": uri, "file": os.path.join(REPO, rel),
+                   "iterations": iterations, "options": options, "workload": workload}
 
 
 def quantile(values, p):
@@ -126,9 +152,11 @@ def walltime_stats(durations_s):
     }
 
 
-def run_one(python, bench, min_iterations, timeout):
+def run_one(python, bench, min_iterations, max_iterations, timeout):
     """-> (status, durations in seconds, pid, output tail)"""
     iterations = max(bench["iterations"], min_iterations)
+    if max_iterations:
+        iterations = min(iterations, max_iterations)
     cmd = [python, HARNESS, bench["file"], "-i", str(iterations)] + bench["options"] + bench["workload"]
     # With CI set the harness stops early once long iterations look stable; every iteration is wanted here.
     env = {k: v for k, v in os.environ.items() if k != "CI"}
@@ -174,9 +202,14 @@ def write_result(folder, bench, stats, pid):
 def main():
     parser = argparse.ArgumentParser(description="Report GraalPy harness benchmarks to CodSpeed (walltime).")
     parser.add_argument("--python", required=True, help="interpreter to measure")
-    parser.add_argument("--suite", nargs="+", choices=sorted(SUITES), default=DEFAULT_SUITES)
+    parser.add_argument("--suite-python", action="append", default=[], metavar="SUITE=PATH",
+                        help="interpreter for the benchmarks of one suite instead of --python, e.g. a "
+                             "virtual environment of it with the packages the suite needs; repeatable")
+    parser.add_argument("--suite", nargs="+", choices=sorted(SUITES) + sorted(OWN_SUITES), default=DEFAULT_SUITES)
     parser.add_argument("--bench", help="regular expression matched against suite/name")
     parser.add_argument("--min-iterations", type=int, default=MIN_ITERATIONS)
+    parser.add_argument("--max-iterations", type=int,
+                        help="run at most this many iterations per benchmark, for a quick check")
     parser.add_argument("--timeout", type=int, default=900, help="seconds per benchmark process")
     parser.add_argument("--output", help="directory for walltime-summary.json")
     parser.add_argument("--defer-failures", action="store_true",
@@ -188,10 +221,19 @@ def main():
         parser.error("--defer-failures needs --output")
     if args.min_iterations < 4:
         parser.error("--min-iterations must be at least 4: two samples are the minimum")
+    if args.max_iterations is not None and args.max_iterations < 4:
+        parser.error("--max-iterations must be at least 4: two samples are the minimum")
 
-    if os.path.exists(args.python):
-        # Each benchmark runs in its own directory.
-        args.python = os.path.abspath(args.python)
+    pythons = {}
+    for item in args.suite_python:
+        suite, _, path = item.partition("=")
+        if suite not in SUITES and suite not in OWN_SUITES or not path:
+            parser.error("--suite-python takes SUITE=PATH with a known suite: %s" % item)
+        pythons[suite] = path
+    # Each benchmark runs in its own directory.
+    absolute = lambda path: os.path.abspath(path) if os.path.exists(path) else path
+    args.python = absolute(args.python)
+    pythons = {suite: absolute(path) for suite, path in pythons.items()}
     selected = list(benchmarks(args.suite, args.bench))
     if not selected:
         parser.error("no benchmark selected")
@@ -210,7 +252,8 @@ def main():
             print("%-48s %10s %10s %7s  skipped: %s" % (bench["id"], "-", "-", "-", SKIP[bench["id"]]), flush=True)
             continue
         started = time.monotonic()
-        status, durations, pid, tail = run_one(args.python, bench, args.min_iterations, args.timeout)
+        status, durations, pid, tail = run_one(pythons.get(bench["suite"], args.python), bench, args.min_iterations,
+                                               args.max_iterations, args.timeout)
         if status != "ok":
             failed.append(bench["id"])
             print("%-48s %10s %10s %7s  FAILED: %s" % (bench["id"], "-", "-", "-", status), flush=True)

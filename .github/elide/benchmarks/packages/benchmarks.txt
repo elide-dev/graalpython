@@ -1,0 +1,19 @@
+# The benchmarks of the suite "packages" of .github/elide/codspeed-bench: one line per benchmark file
+# in this folder, followed by its harness arguments in the form of upstream's
+# mx.graalpython/mx_graalpython_bench_param.py (-i iterations, then the workload arguments).
+#
+# The workload argument is part of the benchmark's name on CodSpeed and selects the expected result
+# in the benchmark file (EXPECTED); a change of it starts a new history there. The iteration count is
+# not part of the name. The first half of the iterations is warm-up.
+#
+# name                  harness arguments
+pydantic-json           -i 30 8000
+pydantic-models         -i 30 10000
+orjson-roundtrip        -i 30 10000
+pandas-csv              -i 30 200000
+pandas-str              -i 30 60000
+pandas-groupby-merge    -i 30 600000
+pandas-apply            -i 30 20000
+numpy-small-ops         -i 30 600
+numpy-vectorized        -i 30 4000000
+lxml-xpath              -i 30 10000

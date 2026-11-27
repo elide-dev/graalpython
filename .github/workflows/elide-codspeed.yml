@@ -1,12 +1,13 @@
 name: CodSpeed benchmarks
-# Steady-state wall time of the C API micro benchmarks and the pure Python meso benchmarks on a
-# native standalone, reported to CodSpeed (https://app.codspeed.io/elide-dev/graalpython).
+# Steady-state wall time of the C API micro benchmarks, the pure Python meso benchmarks and
+# benchmarks of real packages (pydantic, orjson, pandas, numpy, lxml) on a native standalone,
+# reported to CodSpeed (https://app.codspeed.io/elide-dev/graalpython).
 #
 # Wall time needs a dedicated machine, so the measurement runs on the self-hosted benchmark runner
 # linux-amd64-bench. The repository variable
 # CODSPEED_WALLTIME_RUNNER selects another label; the standalone is built for linux-amd64, so it
-# must be an x86_64 runner. The benchmark host is shared between repositories, so the standalone is
-# built on the CI pool and the host is used only for the measurement.
+# must be an x86_64 runner. The benchmark host is shared between repositories, so the standalone and
+# the packages' wheels are built on the CI pool and the host is used only for the measurement.
 #
 # Pull requests are measured only when labelled "perf:bench", and never from a fork: both the build
 # and the measurement run on self-hosted runners.
@@ -75,13 +76,19 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  # The C API benchmarks compile an extension when they start. Check that the standalone runs and
-  # that this works before the benchmark host is occupied. No timing is taken from this job.
-  check:
-    name: check standalone
+  # The packages of the suite "packages" (.github/elide/benchmarks/packages) have no wheels for this
+  # interpreter. Their compiled ones are built from source with the standalone just built, with
+  # GraalPy's patches, and every wheel is collected into one artifact that the benchmark host
+  # installs from without a network. Nothing is cached: the wheels depend on the interpreter build.
+  wheels:
+    name: build package wheels
     needs: build
     runs-on: ${{ vars.CODSPEED_BUILD_RUNNER || 'linux-amd64-cipool' }}
-    timeout-minutes: 30
+    timeout-minutes: 90
+    env:
+      REQUIREMENTS: .github/elide/benchmarks/packages/requirements.txt
+      # pydantic-core and orjson are written in Rust; orjson needs at least 1.95.
+      RUST_VERSION: 1.100.0
     steps:
       - name: Clean workspace
         run: find "${GITHUB_WORKSPACE:?}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
@@ -93,6 +100,114 @@ jobs:
           name: codspeed-graalpy-native-standalone
           path: ${{ runner.temp }}
 
+      # Everything the build installs or caches stays in the job's temporary directory.
+      - name: Install Rust
+        run: |
+          {
+            echo "CARGO_HOME=$RUNNER_TEMP/cargo"
+            echo "RUSTUP_HOME=$RUNNER_TEMP/rustup"
+            echo "XDG_CACHE_HOME=$RUNNER_TEMP/cache"
+          } >> "$GITHUB_ENV"
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+            CARGO_HOME="$RUNNER_TEMP/cargo" RUSTUP_HOME="$RUNNER_TEMP/rustup" \
+            sh -s -- -y --no-modify-path --profile minimal --default-toolchain "$RUST_VERSION"
+          echo "$RUNNER_TEMP/cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Build the wheels
+        env:
+          # Only PyPI. GraalPy's pip also looks for prebuilt wheels in GraalPy's own index otherwise.
+          PIP_INDEX_URL: https://pypi.org/simple
+        run: |
+          set -o pipefail
+          rustc --version
+          tar -C "$RUNNER_TEMP" -xf "$RUNNER_TEMP/graalpy-native-standalone.tar"
+          "$RUNNER_TEMP/GRAALPY_NATIVE_STANDALONE/bin/graalpy" -m venv "$RUNNER_TEMP/build-venv"
+          WHEELS="$RUNNER_TEMP/wheelhouse"
+          pin() { grep -E "^$1==" "$REQUIREMENTS"; }
+          build() {
+            local name=$1 start=$SECONDS
+            shift
+            echo "::group::$name"
+            "$RUNNER_TEMP/build-venv/bin/pip" wheel --no-cache-dir --no-deps -w "$WHEELS" "$@"
+            echo "::endgroup::"
+            echo "$name built in $((SECONDS - start)) s"
+          }
+          # Without an external BLAS and LAPACK (numpy's own fallback routines), so that the benchmark
+          # host needs no libraries for it.
+          build numpy --no-binary numpy -Csetup-args=-Dblas=none -Csetup-args=-Dlapack=none "$(pin numpy)"
+          # Against that numpy, not one compiled again in pandas' build environment.
+          pin numpy > "$RUNNER_TEMP/numpy-constraint.txt"
+          build pandas --no-binary pandas --find-links "$WHEELS" \
+            --build-constraint "$RUNNER_TEMP/numpy-constraint.txt" "$(pin pandas)"
+          # libxml2 and libxslt linked in statically, so that the benchmark host needs no libraries for
+          # lxml. The versions are the ones of lxml's own Linux wheels.
+          (
+            export STATIC_DEPS=true ZLIB_VERSION=1.3.2 LIBICONV_VERSION=1.18 LIBXML2_VERSION=2.14.6 LIBXSLT_VERSION=1.1.43
+            build lxml --no-binary lxml "$(pin lxml)"
+          )
+          build pydantic-core --no-binary pydantic-core "$(pin pydantic-core)"
+          build orjson --no-binary orjson "$(pin orjson)"
+          # The pure Python packages. The compiled ones are taken from the wheelhouse.
+          "$RUNNER_TEMP/build-venv/bin/pip" wheel --no-cache-dir --only-binary :all: -w "$WHEELS" \
+            --find-links "$WHEELS" -r "$REQUIREMENTS"
+          ls -l "$WHEELS"
+
+      # The pool and the benchmark host run the same system, but the host has only its base libraries.
+      - name: Check the libraries the wheels need
+        run: |
+          python3 - "$RUNNER_TEMP/wheelhouse" <<'EOF'
+          import os, re, subprocess, sys, tempfile, zipfile
+          system = {"libc.so.6", "libm.so.6", "libpthread.so.0", "libdl.so.2", "librt.so.1", "libutil.so.1",
+                    "ld-linux-x86-64.so.2", "libstdc++.so.6", "libgcc_s.so.1"}
+          problems = []
+          for wheel in sorted(f for f in os.listdir(sys.argv[1]) if f.endswith(".whl")):
+              with zipfile.ZipFile(os.path.join(sys.argv[1], wheel)) as z, tempfile.TemporaryDirectory() as tmp:
+                  libs = [n for n in z.namelist() if re.search(r"\.so(\.\d+)*$", n)]
+                  shipped = {os.path.basename(n) for n in libs}
+                  needed = set()
+                  for name in libs:
+                      out = subprocess.run(["readelf", "-d", z.extract(name, tmp)], capture_output=True, text=True,
+                                           check=True).stdout
+                      for lib in re.findall(r"\(NEEDED\)\s+Shared library: \[([^\]]+)\]", out):
+                          needed.add(lib)
+                          if lib not in system and lib not in shipped:
+                              problems.append("%s: %s needs %s" % (wheel, name, lib))
+              print("%s: %d libraries, need %s" % (wheel, len(libs), ", ".join(sorted(needed)) or "nothing"))
+          if problems:
+              sys.exit("\n".join(problems))
+          EOF
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: codspeed-package-wheels
+          path: ${{ runner.temp }}/wheelhouse/*.whl
+          retention-days: 1
+          if-no-files-found: error
+
+  # The C API benchmarks compile an extension when they start. Check that the standalone runs and
+  # that this works, and that the packages install and their benchmarks give the right results, before
+  # the benchmark host is occupied. No timing is taken from this job.
+  check:
+    name: check standalone
+    needs: [build, wheels]
+    runs-on: ${{ vars.CODSPEED_BUILD_RUNNER || 'linux-amd64-cipool' }}
+    timeout-minutes: 45
+    steps:
+      - name: Clean workspace
+        run: find "${GITHUB_WORKSPACE:?}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: codspeed-graalpy-native-standalone
+          path: ${{ runner.temp }}
+
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: codspeed-package-wheels
+          path: ${{ runner.temp }}/wheelhouse
+
       - name: Run three C API benchmarks
         run: |
           tar -C "$RUNNER_TEMP" -xf "$RUNNER_TEMP/graalpy-native-standalone.tar"
@@ -102,11 +217,21 @@ jobs:
           python3 .github/elide/codspeed-bench --python "$GRAALPY" \
             --bench '^micro-native/(c-instantiate-large|c-to-c|c-call-method-obj-args)$'
 
+      # Four iterations each: every iteration checks its result.
+      - name: Run the package benchmarks briefly
+        run: |
+          "$RUNNER_TEMP/GRAALPY_NATIVE_STANDALONE/bin/graalpy" -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --no-cache-dir --no-index --find-links "$RUNNER_TEMP/wheelhouse" \
+            -r .github/elide/benchmarks/packages/requirements.txt
+          "$RUNNER_TEMP/venv/bin/python" -c 'import lxml.etree, lxml.html, numpy, orjson, pandas, pydantic'
+          python3 .github/elide/codspeed-bench --python "$RUNNER_TEMP/venv/bin/python" --suite packages \
+            --max-iterations 4
+
   walltime:
     name: walltime
-    needs: [build, check]
+    needs: [build, wheels, check]
     runs-on: ${{ vars.CODSPEED_WALLTIME_RUNNER || 'linux-amd64-bench' }}
-    timeout-minutes: 90
+    timeout-minutes: 120
     permissions:
       contents: read
       id-token: write # CodSpeed OIDC
@@ -120,12 +245,24 @@ jobs:
           name: codspeed-graalpy-native-standalone
           path: ${{ runner.temp }}
 
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: codspeed-package-wheels
+          path: ${{ runner.temp }}/wheelhouse
+
       - name: Unpack the standalone
         run: |
           uname -a; cat /etc/os-release; nproc
           tar -C "$RUNNER_TEMP" -xf "$RUNNER_TEMP/graalpy-native-standalone.tar"
           cc --version
           "$RUNNER_TEMP/GRAALPY_NATIVE_STANDALONE/bin/graalpy" -c 'import sys; print(sys.version)'
+
+      # From the wheels built on the pool only, without a network.
+      - name: Install the packages
+        run: |
+          "$RUNNER_TEMP/GRAALPY_NATIVE_STANDALONE/bin/graalpy" -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --no-cache-dir --no-index --find-links "$RUNNER_TEMP/wheelhouse" \
+            -r .github/elide/benchmarks/packages/requirements.txt
 
       - name: Measure
         # Action and runner versions already in use on this host.
@@ -140,7 +277,8 @@ jobs:
           run: >-
             python3 .github/elide/codspeed-bench
             --python "${{ runner.temp }}/GRAALPY_NATIVE_STANDALONE/bin/graalpy"
-            --suite micro-native meso
+            --suite-python packages="${{ runner.temp }}/venv/bin/python"
+            --suite micro-native meso packages
             --output "${{ env.BENCH_OUTPUT }}"
             --defer-failures
 
