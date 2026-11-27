@@ -1,0 +1,14 @@
+# Upstream CI jobs (from ci.jsonnet) that .github/workflows/elide-ci.yml runs.
+# One regular expression per line, matched against the whole job name. Every line must match at
+# least one job, so a job that upstream renames or removes fails the plan job instead of silently
+# no longer running.
+
+# Only jobs that test the native standalone: the fork is about the native build of GraalPy.
+# GraalPy's own Python tests on the native standalone are a job of elide-ci.yml itself, because
+# upstream does not run that job on GitHub.
+
+# CPython's standard library tests on the native standalone.
+python-tagged-unittest-gate-batch\d+-linux-amd64-jdk-latest
+
+# Tests with several contexts in one process, on the native standalone.
+python-unittest-multi-context-gate-linux-amd64-jdk-latest

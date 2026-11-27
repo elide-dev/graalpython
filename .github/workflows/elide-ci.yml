@@ -1,0 +1,223 @@
+name: Elide CI
+# The tests this fork runs on its changes: upstream's CI jobs for the native standalone, on Linux amd64.
+#
+# The jobs themselves stay upstream's: the selection is .github/elide/ci-jobs.txt, and
+# elide-ci-matrix.yml, which runs them, is generated from upstream's ci-matrix-gen.yml. The fork
+# edits no upstream workflow, and a merge from upstream brings its changes to the jobs with it.
+#
+# Everything runs on Elide's runners. They keep state between jobs, so pull requests from forks
+# do not run here. See .github/elide/README.md.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [develop, 'elide-*.x']
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: elide-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  plan:
+    name: plan
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.draft == false &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ${{ vars.ELIDE_CI_RUNNER || 'linux-amd64-cipool' }}
+    outputs:
+      jobs: ${{ steps.plan.outputs.jobs }}
+    steps:
+      - name: Clean workspace
+        run: find "${GITHUB_WORKSPACE:?}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Describe the runner
+        run: |
+          cat /etc/os-release || true
+          nproc; free -g | head -2; df -h . | tail -1
+          for tool in python3 cc jq mvn cmake; do "$tool" --version 2>&1 | head -1 || echo "$tool: missing"; done
+          sudo -n true && echo "sudo: yes" || echo "sudo: no"
+          # The time-zone tests compare the system's time-zone data with the data built into GraalPy.
+          dpkg-query -W tzdata || true
+          grep -h ' tzdata' /var/log/dpkg.log /var/log/dpkg.log.1 2>/dev/null | tail -5 || true
+      - name: Check that elide-ci-matrix.yml matches upstream's workflow
+        run: python3 .github/elide/ci-matrix-sync --check
+      - name: Download sjsonnet
+        run: |
+          curl -fsSL -o sjsonnet https://github.com/databricks/sjsonnet/releases/download/0.5.7/sjsonnet-0.5.7-linux-x86_64
+          chmod +x sjsonnet
+      - name: Select the upstream jobs
+        id: plan
+        run: python3 .github/elide/ci-plan ./sjsonnet
+
+  abi-check:
+    name: abi-check
+    needs: plan
+    runs-on: ${{ vars.ELIDE_CI_RUNNER || 'linux-amd64-cipool' }}
+    steps:
+      - name: Clean workspace
+        run: find "${GITHUB_WORKSPACE:?}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install libabigail
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get -qq install -y abigail-tools
+      - name: Get mx and labsjdk
+        run: |
+          git config --global http.timeout 600
+          git clone https://github.com/graalvm/mx
+          ./mx/mx fetch-jdk -A --jdk-id labsjdk-ce-latest
+          echo "$(pwd)/mx/" >> "$GITHUB_PATH"
+          echo "JAVA_HOME=$HOME/.mx/jdks/labsjdk-ce-latest" >> "$GITHUB_ENV"
+          echo "JVMCI_VERSION_CHECK=ignore" >> "$GITHUB_ENV"
+      - name: Run abi-check
+        run: mx abi-check
+
+  # The native standalone that the tagged and multi-context tests run on, under the artifact name
+  # those jobs download. Upstream's own job for it, python-svm-build-gate-linux-amd64-jdk-latest,
+  # is not used: after the build it checks a host inlining log that the quick build mode of
+  # CI runs on GitHub (-Ob) does not write, so it fails. This job runs the same gate without that check.
+  native-standalone:
+    name: build native standalone
+    needs: plan
+    runs-on: ${{ vars.ELIDE_CI_RUNNER || 'linux-amd64-cipool' }}
+    timeout-minutes: 90
+    env:
+      # As in upstream's job: assertions on, quick build mode.
+      BUILD_WITH_ASSERTIONS: 'true'
+      GITHUB_CI: 'true'
+      CI: 'true'
+      MX_OUTPUT_ROOT_INCLUDES_CONFIG: 'false'
+      NATIVE_IMAGE_EXPERIMENTAL_OPTIONS_ARE_FATAL: 'true'
+      GRAALVM_CHECK_EXPERIMENTAL_OPTIONS: 'true'
+      TRUFFLE_STRICT_OPTION_DEPRECATION: 'true'
+      CFLAGS: -ggdb
+      LANG: en_US.UTF-8
+      PYTHONIOENCODING: utf-8
+    steps:
+      - name: Clean workspace
+        run: find "${GITHUB_WORKSPACE:?}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: main
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'  # upstream: 3.12.8, which has no build for the runners' Ubuntu
+
+      - name: Install system packages
+        run: |
+          sudo apt-get -qq update
+          for pkg in binutils bzip2 cmake curl lcov libffi-dev llvm maven zlib1g-dev; do
+            sudo apt-get -qq install -y "$pkg" || true
+          done
+
+      - name: Get mx and labsjdk
+        run: |
+          git config --global http.timeout 600
+          git clone https://github.com/graalvm/mx
+          ./mx/mx fetch-jdk -A --configuration main/ci/graal/common.json --jdk-id labsjdk-ce-latest
+          git -C mx checkout "$(python3 -c 'import json; print(json.load(open("main/ci/graal/common.json"))["mx_version"])')"
+          echo "$(pwd)/mx/" >> "$GITHUB_PATH"
+          echo "JAVA_HOME=$HOME/.mx/jdks/labsjdk-ce-latest" >> "$GITHUB_ENV"
+          echo "JVMCI_VERSION_CHECK=ignore" >> "$GITHUB_ENV"
+
+      - name: Build
+        working-directory: main
+        run: |
+          mx sforceimports
+          mx sversions
+          mx --strict-compliance --primary gate --tags python-svm-build -B=--force-deprecation-as-warning
+
+      # The same archive layout as upstream's job, which the test jobs unpack next to their checkout.
+      - name: Pack the standalone
+        working-directory: main
+        run: tar cf graalpy-native-standalonelinux.tar ../main/mxbuild/*/GRAALPY_*_STANDALONE
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: graalpy-native-standalonelinux
+          path: main/graalpy-native-standalonelinux.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  # GraalPy's own Python tests, including the C API tests, on the native standalone. This is
+  # upstream's job python-svm-unittest-gate-linux-amd64-jdk-latest, which upstream leaves out on
+  # GitHub because its hosted runners run out of memory. Elide's runners have enough.
+  svm-unittest:
+    name: python tests on the native standalone
+    needs: [plan, native-standalone]
+    runs-on: ${{ vars.ELIDE_CI_RUNNER || 'linux-amd64-cipool' }}
+    timeout-minutes: 120
+    env:
+      BUILD_WITH_ASSERTIONS: 'true'
+      GITHUB_CI: 'true'
+      CI: 'true'
+      MX_OUTPUT_ROOT_INCLUDES_CONFIG: 'false'
+      MX_BUILD_SHALLOW_DEPENDENCY_CHECKS: 'true'
+      NATIVE_IMAGE_EXPERIMENTAL_OPTIONS_ARE_FATAL: 'true'
+      GRAALVM_CHECK_EXPERIMENTAL_OPTIONS: 'true'
+      TRUFFLE_STRICT_OPTION_DEPRECATION: 'true'
+      CFLAGS: -ggdb
+      LANG: en_US.UTF-8
+      PYTHONIOENCODING: utf-8
+      ARTIFACT_PATH_PREFIX: '..'
+    steps:
+      - name: Clean workspace
+        run: find "${GITHUB_WORKSPACE:?}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: main
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'  # upstream: 3.12.8, which has no build for the runners' Ubuntu
+
+      - name: Install system packages
+        run: |
+          sudo apt-get -qq update
+          for pkg in binutils bzip2 cmake curl lcov libffi-dev llvm maven zlib1g-dev; do
+            sudo apt-get -qq install -y "$pkg" || true
+          done
+
+      - name: Get mx and labsjdk
+        run: |
+          git config --global http.timeout 600
+          git clone https://github.com/graalvm/mx
+          ./mx/mx fetch-jdk -A --configuration main/ci/graal/common.json --jdk-id labsjdk-ce-latest
+          git -C mx checkout "$(python3 -c 'import json; print(json.load(open("main/ci/graal/common.json"))["mx_version"])')"
+          echo "$(pwd)/mx/" >> "$GITHUB_PATH"
+          echo "$(pwd)/main/.github/scripts/" >> "$GITHUB_PATH"
+          echo "JAVA_HOME=$HOME/.mx/jdks/labsjdk-ce-latest" >> "$GITHUB_ENV"
+          echo "JVMCI_VERSION_CHECK=ignore" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: graalpy-native-standalonelinux
+
+      # As upstream's jobs do: unpack the standalone into mxbuild and point mx at it.
+      - name: Unpack the standalone
+        working-directory: main
+        run: |
+          mx sforceimports
+          mx sversions
+          unpack-artifact graalpy-native-standalonelinux
+          set-export GRAALPY_HOME 'mxbuild/*/GRAALPY_*_STANDALONE'
+
+      - name: Run the tests
+        working-directory: main
+        run: mx --strict-compliance --primary gate --tags python-svm-unittest -B=--force-deprecation-as-warning
+
+  tests:
+    name: tests
+    needs: [plan, native-standalone]
+    uses: ./.github/workflows/elide-ci-matrix.yml
+    with:
+      jobs_to_run: ${{ needs.plan.outputs.jobs }}
+      logs_retention_days: 3
+      artifacts_retention_days: 1

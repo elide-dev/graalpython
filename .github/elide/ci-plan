@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+# Turns .github/elide/ci-jobs.txt into the job filter for elide-ci-matrix.yml and checks
+# that every line of it still selects a job. Used by .github/workflows/elide-ci.yml.
+#
+#   ci-plan <jsonnet binary>
+#
+# Prints the selected jobs, and writes "jobs=<regular expression>" to $GITHUB_OUTPUT when set.
+import json
+import os
+import re
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))
+TIERS = ["tier1", "tier2", "tier3"]
+
+
+def main(jsonnet_bin):
+    with open(os.path.join(HERE, "ci-jobs.txt")) as f:
+        patterns = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+    job_filter = "^(?:%s)$" % "|".join(patterns)
+
+    # Ask upstream's own script, so that its exclusions and tiers apply here as they will in the run.
+    selected = {}
+    for tier in TIERS:
+        out = subprocess.check_output(
+            [sys.executable, os.path.join(REPO, ".github", "scripts", "extract_matrix.py"),
+             jsonnet_bin, os.path.join(REPO, "ci.jsonnet"), tier, job_filter], text=True, cwd=REPO)
+        for job in json.loads(out):
+            if job["name"] != tier:  # every matrix starts with a placeholder named after the tier
+                selected[job["name"]] = (tier, job)
+
+    for name, (tier, job) in sorted(selected.items(), key=lambda item: (item[1][0], item[0])):
+        provides = job.get("provide_artifact")
+        requires = job.get("require_artifact")
+        print("%s  %-64s %s%s" % (tier, name, "provides %s " % provides[0] if provides else "",
+                                 "requires %s" % requires[0] if requires else ""))
+
+    # elide-ci-matrix.yml runs every job on Elide's Linux amd64 runners, whatever the job asks for.
+    foreign = sorted(name for name, (_, job) in selected.items() if job["os"] != "ubuntu-24.04")
+    if foreign:
+        sys.exit("jobs that are not for Linux amd64: " + ", ".join(foreign))
+
+    unmatched = [p for p in patterns if not any(re.fullmatch(p, name) for name in selected)]
+    if unmatched:
+        sys.exit("ci-jobs.txt lines that select no upstream job: " + ", ".join(unmatched))
+
+    # The artifacts these jobs need must come from one of them or from elide-ci.yml itself.
+    provided = {job["provide_artifact"][0] for _, job in selected.values() if job.get("provide_artifact")}
+    provided.add("graalpy-native-standalonelinux")
+    missing = sorted({job["require_artifact"][0] for _, job in selected.values()
+                      if job.get("require_artifact") and job["require_artifact"][0] not in provided})
+    if missing:
+        sys.exit("artifacts that no selected job provides: " + ", ".join(missing))
+
+    print("%d jobs" % len(selected))
+    if os.environ.get("GITHUB_OUTPUT"):
+        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+            f.write("jobs=%s\n" % job_filter)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1])
