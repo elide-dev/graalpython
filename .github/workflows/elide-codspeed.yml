@@ -161,10 +161,19 @@ jobs:
             echo "::error::failed to build:$failed"
             exit 1
           fi
-          # The pure Python packages. The compiled ones are taken from the wheelhouse.
-          "$RUNNER_TEMP/build-venv/bin/pip" wheel --no-cache-dir --only-binary :all: -w "$WHEELS" \
-            --find-links "$WHEELS" -r "$REQUIREMENTS"
+          # The pure Python packages. Only these: PyPI also has prebuilt wheels of some of the compiled
+          # ones for GraalPy, which pip would prefer to the ones built here.
+          grep -v -E '^(numpy|pandas|lxml|pydantic-core|orjson)==' "$REQUIREMENTS" > "$RUNNER_TEMP/pure.txt"
+          "$RUNNER_TEMP/build-venv/bin/pip" wheel --no-cache-dir --no-deps --only-binary :all: -w "$WHEELS" \
+            -r "$RUNNER_TEMP/pure.txt"
           ls -l "$WHEELS"
+          # One wheel per pinned package, so that the installation has no choice.
+          expected=$(grep -c -E '^[A-Za-z0-9_.-]+==' "$REQUIREMENTS")
+          found=$(find "$WHEELS" -name '*.whl' | wc -l)
+          if [ "$found" -ne "$expected" ]; then
+            echo "::error::$found wheels for $expected pinned packages"
+            exit 1
+          fi
 
       # The pool and the benchmark host run the same system, but the host has only its base libraries.
       - name: Check the libraries the wheels need

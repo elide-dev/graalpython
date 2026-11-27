@@ -2,7 +2,8 @@
 # replace, title, len, slice) and parsing of date strings with to_datetime.
 #
 # Run with harness.py by .github/elide/codspeed-bench, see .github/elide/README.md. The argument is
-# the number of rows.
+# the number of rows. One iteration does the work ROUNDS times on data of that size, so that less
+# data is alive at a time.
 import math
 import os
 
@@ -12,10 +13,11 @@ for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
 import numpy as np
 import pandas as pd
 
-# number of rows -> result of one iteration
+# number of rows -> result of one round
 EXPECTED = {
-    60000: (20146, 569021, 2878839, 2022984, 9922, 180777, 2620, 24, 938675),
+    20000: (6620, 182185, 959289, 666674, 3262, 60018, 864, 24, 312836),
 }
+ROUNDS = 3
 REL_TOL = 1e-9
 
 TEXT = None
@@ -37,7 +39,7 @@ def _check(size, result):
         raise AssertionError("wrong result for size %d: %r, expected %r" % (size, result, expected))
 
 
-def __setup__(size=60000):
+def __setup__(size=20000):
     global TEXT, DATES
     rs = np.random.RandomState(6)
     first = rs.choice(["  John", "jane ", "ALICE", "Bob", "Éva", "Zoë "], size)
@@ -49,7 +51,7 @@ def __setup__(size=60000):
     DATES = pd.Series([(base + pd.Timedelta(seconds=int(s))).strftime("%Y-%m-%d %H:%M:%S") for s in seconds])
 
 
-def measure(size):
+def one_round(size):
     s = TEXT.str.strip().str.lower()
     corp = s.str.contains("corp.org", regex=False)
     emails = s.str.extract(r"<([^>]+)>", expand=False)
@@ -66,5 +68,11 @@ def measure(size):
     return result
 
 
-def __benchmark__(size=60000):
+def measure(size):
+    for _ in range(ROUNDS):
+        result = one_round(size)
+    return result
+
+
+def __benchmark__(size=20000):
     return measure(size)

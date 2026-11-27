@@ -7,13 +7,13 @@
 # not part of the name. The first half of the iterations is warm-up.
 #
 # name                  harness arguments
-pydantic-json           -i 30 8000
-pydantic-models         -i 30 10000
-orjson-roundtrip        -i 30 10000
-pandas-csv              -i 30 200000
-pandas-str              -i 30 60000
-pandas-groupby-merge    -i 30 600000
-pandas-apply            -i 30 20000
-numpy-small-ops         -i 30 600
-numpy-vectorized        -i 30 4000000
-lxml-xpath              -i 30 10000
+pydantic-json           -i 40 8000
+pydantic-models         -i 40 10000
+orjson-roundtrip        -i 40 2500
+pandas-csv              -i 40 50000
+pandas-str              -i 40 20000
+pandas-groupby-merge    -i 40 150000
+pandas-apply            -i 40 20000
+numpy-small-ops         -i 40 600
+numpy-vectorized        -i 40 4000000
+lxml-xpath              -i 40 2500

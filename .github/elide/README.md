@@ -75,11 +75,13 @@ merges from upstream cannot conflict with it:
 
 Each file is in the format of upstream's `harness.py`, like the files in `meso` and `micro`:
 `__setup__(size)` builds the input from a fixed seed and is not measured, `__benchmark__(size)` is
-one measured iteration and calls `measure(size)`. Every iteration compares its result with
-`EXPECTED[size]` in the file and fails the benchmark when it differs; floats are compared with a
+one measured iteration and calls `measure(size)`. Benchmarks whose data are large repeat the work
+`ROUNDS` times per iteration on smaller data instead: on GraalPy, iterations over data with
+millions of objects varied by a factor of up to ten. Every iteration (or round) compares its result
+with `EXPECTED[size]` in the file and fails the benchmark when it differs; floats are compared with a
 relative tolerance, because they differ in the last digits between platforms. Unlike upstream's
 `macro` benchmarks, the files do not call `ensure_packages`: the packages are installed before the
-run, because the benchmark host has no network access to PyPI.
+run, from the wheels built on the pool.
 
 The fork does not edit upstream's benchmark table, `mx.graalpython/mx_graalpython_bench_param.py`,
 so the folder has its own, `benchmarks.txt`: the benchmarks with their harness arguments (iterations
@@ -93,7 +95,7 @@ To add a benchmark:
 
 1. Write `<name>.py` in the `packages` folder and add a line to its `benchmarks.txt`. Size it so that an
    iteration takes about 0.2 to 3 s on GraalPy, and give it enough iterations that the second half,
-   which is what is reported, is warmed up (30 for the current ones).
+   which is what is reported, is warmed up (40 for the current ones).
 2. Run it with CPython, for example
    `python graalpython/com.oracle.graal.python.benchmarks/python/harness.py graalpython/com.oracle.graal.python.benchmarks/python/packages/<name>.py -i 4 <size>`
    with the `python` of a virtual environment that has the folder's `requirements.txt` installed. For a size

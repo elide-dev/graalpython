@@ -3,16 +3,18 @@
 # parsing, link extraction and serialization of an HTML table.
 #
 # Run with harness.py by .github/elide/codspeed-bench, see .github/elide/README.md. The argument is
-# the number of items in the XML document.
+# the number of items in the XML document. One iteration does the work ROUNDS times on data of that
+# size, so that less data is alive at a time.
 import math
 import random
 
 from lxml import etree, html
 
-# number of items -> result of one iteration
+# number of items -> result of one round
 EXPECTED = {
-    10000: (1013, 1263194.7300000004, 3109, 10000, 1678301, 10000, 5000, 249656, 68457, 462455),
+    2500: (264, 307224.9399999998, 766, 2500, 418417, 2500, 1250, 60754, 16278, 114026),
 }
+ROUNDS = 4
 REL_TOL = 1e-9
 
 NS = "urn:example:inventory"
@@ -35,7 +37,7 @@ def _check(size, result):
         raise AssertionError("wrong result for size %d: %r, expected %r" % (size, result, expected))
 
 
-def __setup__(size=10000):
+def __setup__(size=2500):
     global XML_DOC, HTML_DOC
     r = random.Random(61)
     root = etree.Element("{%s}inventory" % NS, nsmap={"inv": NS})
@@ -53,7 +55,7 @@ def __setup__(size=10000):
                 "<p>Text <b>bold</b><br>tail</div></body></html>" % rows)
 
 
-def measure(size):
+def one_round(size):
     ns = {"i": NS}
     root = etree.fromstring(XML_DOC)
     low = root.xpath("//i:item[number(i:qty) < 50]/@sku", namespaces=ns)
@@ -77,5 +79,11 @@ def measure(size):
     return result
 
 
-def __benchmark__(size=10000):
+def measure(size):
+    for _ in range(ROUNDS):
+        result = one_round(size)
+    return result
+
+
+def __benchmark__(size=2500):
     return measure(size)

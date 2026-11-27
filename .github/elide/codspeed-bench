@@ -257,7 +257,8 @@ def main():
         stats = walltime_stats(durations)
         if folder:
             write_result(folder, bench, stats, pid)
-        summary[bench["uri"]] = stats
+        # The summary also keeps every iteration's duration, which CodSpeed does not take.
+        summary[bench["uri"]] = dict(stats, durations_s=durations)
         measured += 1
         print("%-48s %10.4f %10.4f %7d  ok (%ds)" % (bench["id"], stats["median_ns"] / 1e9, stats["stdev_ns"] / 1e9,
                                                       stats["rounds"], time.monotonic() - started), flush=True)

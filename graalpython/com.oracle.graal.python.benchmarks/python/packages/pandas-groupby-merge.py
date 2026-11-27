@@ -2,7 +2,8 @@
 # nlargest, pivot_table and a grouped rank.
 #
 # Run with harness.py by .github/elide/codspeed-bench, see .github/elide/README.md. The argument is
-# the number of rows of the fact table.
+# the number of rows of the fact table. One iteration does the work ROUNDS times on data of that
+# size, so that less data is alive at a time.
 import math
 import os
 
@@ -12,20 +13,21 @@ for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
 import numpy as np
 import pandas as pd
 
-# number of rows -> result of one iteration
+# number of rows -> result of one round
 EXPECTED = {
-    600000: (
-        524828,
+    150000: (
+        131355,
         32,
-        130964960.46000001,
-        3217.1785678239376,
-        524828,
-        1750154.6600000001,
-        52768190.0,
-        136105,
-        1762282.68,
+        32762568.990000002,
+        3013.5156341057127,
+        131355,
+        579432.23,
+        12418730.170000002,
+        33582,
+        444748.38,
     ),
 }
+ROUNDS = 4
 REL_TOL = 1e-9
 
 SALES = CUSTOMERS = PRODUCTS = None
@@ -46,7 +48,7 @@ def _check(size, result):
         raise AssertionError("wrong result for size %d: %r, expected %r" % (size, result, expected))
 
 
-def __setup__(size=600000):
+def __setup__(size=150000):
     global SALES, CUSTOMERS, PRODUCTS
     rs = np.random.RandomState(3)
     SALES = pd.DataFrame({
@@ -63,7 +65,7 @@ def __setup__(size=600000):
                              "cost": rs.randint(1, 6000, 700) / 100})
 
 
-def measure(size):
+def one_round(size):
     df = SALES.merge(CUSTOMERS, on="cust_id", how="left").merge(PRODUCTS, on="prod_id", how="inner")
     df["revenue"] = df["qty"] * df["price"]
     df["margin"] = df["revenue"] - df["qty"] * df["cost"]
@@ -78,5 +80,11 @@ def measure(size):
     return result
 
 
-def __benchmark__(size=600000):
+def measure(size):
+    for _ in range(ROUNDS):
+        result = one_round(size)
+    return result
+
+
+def __benchmark__(size=150000):
     return measure(size)

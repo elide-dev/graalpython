@@ -2,17 +2,19 @@
 # floats, None), also with OPT_INDENT_2 | OPT_SORT_KEYS, and dumps of a list of dataclasses.
 #
 # Run with harness.py by .github/elide/codspeed-bench, see .github/elide/README.md. The argument is
-# the number of users in the document.
+# the number of users in the document. One iteration does the work ROUNDS times on data of that
+# size, so that less data is alive at a time.
 import dataclasses
 import math
 import random
 
 import orjson
 
-# number of users -> result of one iteration
+# number of users -> result of one round
 EXPECTED = {
-    10000: (17173340, 40000, 7853271, 1268050, 25294, 44980320.98),
+    2500: (4290716, 10000, 1962336, 316515, 6334, 11078071.56),
 }
+ROUNDS = 4
 REL_TOL = 1e-9
 
 
@@ -62,14 +64,14 @@ def make_doc(n, seed):
     return {"version": 3, "generated": "2024-05-06T07:08:09Z", "users": users}
 
 
-def __setup__(size=10000):
+def __setup__(size=2500):
     global DOC, EVENTS, BLOB
     DOC = make_doc(size, 11)
     EVENTS = [Event(e["t"], e["kind"], e["value"]) for u in DOC["users"] for e in u["events"]]
     BLOB = orjson.dumps(DOC)
 
 
-def measure(size):
+def one_round(size):
     dumped = 0
     loaded = 0
     for _ in range(4):
@@ -85,5 +87,11 @@ def measure(size):
     return result
 
 
-def __benchmark__(size=10000):
+def measure(size):
+    for _ in range(ROUNDS):
+        result = one_round(size)
+    return result
+
+
+def __benchmark__(size=2500):
     return measure(size)
