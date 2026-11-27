@@ -1,0 +1,77 @@
+# numpy on many small arrays from a Python loop: a particle simulation with one 3-element array per
+# particle (arithmetic, indexing, linalg.norm, dot, stack, mean, clip). The time goes into calls
+# from Python into numpy, not into numpy's loops.
+#
+# Run with harness.py by .github/elide/codspeed-bench, see .github/elide/README.md. The argument is
+# the number of particles.
+import math
+import os
+
+for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
+import numpy as np
+
+STEPS = 50
+
+# number of particles -> result of one iteration
+EXPECTED = {
+    600: (143392.7880996725, 804),
+}
+REL_TOL = 1e-9
+
+POS = VEL = None
+_first = []
+
+
+def _check(size, result):
+    """Fails the benchmark on a wrong result. Floats differ in the last digits between platforms."""
+    expected = EXPECTED.get(size)
+    if expected is None:
+        if not _first:
+            _first.append(result)
+            print("### no expected result for size %d, the first iteration gave %r" % (size, result))
+        expected = _first[0]
+    if len(result) != len(expected) or not all(
+            math.isclose(r, e, rel_tol=REL_TOL) if isinstance(e, float) else r == e
+            for r, e in zip(result, expected)):
+        raise AssertionError("wrong result for size %d: %r, expected %r" % (size, result, expected))
+
+
+def __setup__(size=600):
+    global POS, VEL
+    rs = np.random.RandomState(1)
+    POS = [rs.rand(3) for _ in range(size)]
+    VEL = [rs.rand(3) - 0.5 for _ in range(size)]
+
+
+def measure(size):
+    pos = [p.copy() for p in POS]
+    vel = [v.copy() for v in VEL]
+    g = np.array([0.0, 0.0, -9.81])
+    dt = np.float64(0.01)
+    energy = 0.0
+    bounces = 0
+    for step in range(STEPS):
+        for i in range(len(pos)):
+            v = vel[i] + g * dt
+            p = pos[i] + v * dt
+            if p[2] < 0.0:
+                p[2] = -p[2]
+                v[2] = -v[2] * 0.9
+                bounces += 1
+            n = np.linalg.norm(v)
+            if n > 5.0:
+                v = v / n * 5.0
+            pos[i] = p
+            vel[i] = v
+            energy += float(0.5 * np.dot(v, v) + 9.81 * p[2])
+        center = np.mean(np.stack(pos[:16]), axis=0)
+        energy += float(np.clip(center, 0, 1).sum()) + float(np.maximum(np.float64(step), 1.0))
+    result = (energy, bounces)
+    _check(size, result)
+    return result
+
+
+def __benchmark__(size=600):
+    return measure(size)

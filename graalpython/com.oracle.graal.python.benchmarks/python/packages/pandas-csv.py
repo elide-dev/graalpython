@@ -1,0 +1,75 @@
+# pandas: read_csv of an in-memory CSV (type inference, a date column, usecols with a categorical
+# dtype), a filter, to_csv of the result and a groupby on the categorical column.
+#
+# Run with harness.py by .github/elide/codspeed-bench, see .github/elide/README.md. The argument is
+# the number of rows. One iteration does the work ROUNDS times on data of that size, so that less
+# data is alive at a time.
+import io
+import math
+import os
+
+for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
+import numpy as np
+import pandas as pd
+
+# number of rows -> result of one round
+EXPECTED = {
+    50000: (772606, 24984228, 50000, 325941, 5013, 24947990.612, 4967281.144),
+}
+ROUNDS = 4
+REL_TOL = 1e-9
+
+CSV = ""
+_first = []
+
+
+def _check(size, result):
+    """Fails the benchmark on a wrong result. Floats differ in the last digits between platforms."""
+    expected = EXPECTED.get(size)
+    if expected is None:
+        if not _first:
+            _first.append(result)
+            print("### no expected result for size %d, the first iteration gave %r" % (size, result))
+        expected = _first[0]
+    if len(result) != len(expected) or not all(
+            math.isclose(r, e, rel_tol=REL_TOL) if isinstance(e, float) else r == e
+            for r, e in zip(result, expected)):
+        raise AssertionError("wrong result for size %d: %r, expected %r" % (size, result, expected))
+
+
+def __setup__(size=50000):
+    global CSV
+    rs = np.random.RandomState(4)
+    df = pd.DataFrame({
+        "id": np.arange(size),
+        "ts": pd.Timestamp("2023-01-01") + pd.to_timedelta(rs.randint(0, 86400 * 365, size), unit="s"),
+        "city": rs.choice(["Prague", "Brno", "Ostrava", "Plzen", "Liberec"], size),
+        "amount": (rs.rand(size) * 1000).round(3),
+        "count": rs.randint(0, 1000, size),
+        "flag": rs.rand(size) < 0.3,
+        "comment": np.where(rs.rand(size) < 0.1, "", "ok"),
+    })
+    CSV = df.to_csv(index=False)
+
+
+def one_round(size):
+    df = pd.read_csv(io.StringIO(CSV), parse_dates=["ts"])
+    df2 = pd.read_csv(io.StringIO(CSV), usecols=["id", "city", "amount"], dtype={"city": "category"})
+    out = df[df["flag"]].to_csv(index=False, float_format="%.2f")
+    by_city = df2.groupby("city", observed=True)["amount"].sum()
+    result = (len(out), int(df["count"].sum()), len(df2), int(df["ts"].dt.month.sum()),
+              int(df["comment"].isna().sum()), float(by_city.sum()), float(by_city["Brno"]))
+    _check(size, result)
+    return result
+
+
+def measure(size):
+    for _ in range(ROUNDS):
+        result = one_round(size)
+    return result
+
+
+def __benchmark__(size=50000):
+    return measure(size)

@@ -2,7 +2,8 @@
 
 This repository is a fork of [oracle/graalpython](https://github.com/oracle/graalpython). Everything
 the fork adds to CI is in this folder and in workflow files named `elide-*.yml`. GitHub only reads
-workflows from `.github/workflows`, so the workflow files cannot live here.
+workflows from `.github/workflows`, so the workflow files cannot live here. The package benchmarks
+live with GraalPy's other benchmarks, in a folder of their own (see "Package benchmarks").
 
 The fork does not edit upstream's files, so merging from upstream cannot conflict with its CI. The
 one exception is listed at the end.
@@ -42,14 +43,120 @@ work on GitHub. The comments in the workflow say why.
 
 ## Benchmarks
 
-`elide-codspeed.yml` measures the wall time of GraalPy's C API micro benchmarks and pure Python
-meso benchmarks on a native standalone and reports it to CodSpeed
+`elide-codspeed.yml` measures the wall time of GraalPy's C API micro benchmarks, its pure Python
+meso benchmarks and benchmarks of real packages on a native standalone and reports it to CodSpeed
 (https://app.codspeed.io/elide-dev/graalpython). It runs on pushes to `develop` and `elide-*.x`,
 and on pull requests that carry the label `perf:bench`. `codspeed-bench` is the driver that runs
 the benchmarks and writes the results.
 
-The standalone is built on the pool. The measurement runs on the benchmark runner with the label
-`linux-amd64-bench`, which is shared between repositories, so only the measurement runs there.
+The standalone and the packages' wheels are built on the pool. The measurement runs on the
+benchmark runner with the label `linux-amd64-bench`, which is shared between repositories, so only
+the measurement runs there.
+
+### Package benchmarks
+
+The suite `packages` of `codspeed-bench` measures pydantic, orjson, pandas, numpy and lxml. Its
+files are next to upstream's benchmarks, in the fork's own folder
+`graalpython/com.oracle.graal.python.benchmarks/python/packages`, which upstream does not have, so
+merges from upstream cannot conflict with it:
+
+| Benchmark | What one iteration does |
+|---|---|
+| `pydantic-json` | `validate_json` and `dump_json` of a list of nested models with a discriminated union, and `model_dump_json`/`model_validate_json` per model |
+| `pydantic-models` | `model_validate` from dicts and `model_dump`, `model_validate_json` and `model_dump_json`, of nested models with a field validator |
+| `orjson-roundtrip` | `dumps` and `loads` of a nested document, also indented with sorted keys, and `dumps` of dataclasses |
+| `pandas-csv` | `read_csv` of an in-memory CSV (dates, a categorical column), a filter, `to_csv`, a groupby |
+| `pandas-str` | `Series.str` methods (strip, lower, contains, extract, split, replace, title) and `to_datetime` |
+| `pandas-groupby-merge` | merges of a fact table with two dimension tables, groupby aggregations, `pivot_table`, a grouped rank |
+| `pandas-apply` | `DataFrame.apply(axis=1)`, `Series.apply` and `Series.map` with Python functions, `iterrows`, `itertuples` |
+| `numpy-small-ops` | a particle simulation on many 3-element arrays from a Python loop |
+| `numpy-vectorized` | ufuncs, reductions, sort, percentile, an FFT and a small linear solve on large arrays |
+| `lxml-xpath` | parse, XPath queries, edits and serialization of an XML document, and `lxml.html` parsing of a table |
+
+Each file is in the format of upstream's `harness.py`, like the files in `meso` and `micro`:
+`__setup__(size)` builds the input from a fixed seed and is not measured, `__benchmark__(size)` is
+one measured iteration and calls `measure(size)`. Some benchmarks repeat the work `ROUNDS` times
+per iteration on smaller data. That was meant to make their iterations on GraalPy steadier, and it
+did not: orjson-roundtrip, pandas-csv, pandas-str, pandas-groupby-merge and lxml-xpath still vary
+by up to a factor of ten from one iteration to the next. A diagnose run (see "Diagnosing noisy rows")
+traced the variation to garbage collection pauses, which take 40 to 70% of an iteration on these
+rows, from two causes in GraalPy's memory management:
+
+- On orjson-roundtrip, pandas-csv, pandas-str and lxml-xpath the heap that survives a full
+  collection grows with every iteration (by 20 to 110 MB per iteration), although the benchmarks
+  keep nothing between iterations; it is only released after the last iteration. Collections
+  therefore take longer and longer (up to 7.6 s), and an iteration is slow when one falls into it.
+- On pandas-groupby-merge, native allocations reach GraalPy's native memory limit
+  (`--python.InitialNativeMemory`, 256 MB) more often in every iteration, and each time GraalPy
+  forces full collections, up to 65 in one iteration, until it doubles the limit. Durations follow
+  the iteration number (17 s at iteration 10, 16 s at iteration 22, about 1 s after each doubling).
+
+The rows measure GraalPy's default behaviour, so they keep this variation until it is fixed.
+
+Every iteration (or round) compares its result
+with `EXPECTED[size]` in the file and fails the benchmark when it differs; floats are compared with a
+relative tolerance, because they differ in the last digits between platforms. Unlike upstream's
+`macro` benchmarks, the files do not call `ensure_packages`: the packages are installed before the
+run, from the wheels built on the pool.
+
+The fork does not edit upstream's benchmark table, `mx.graalpython/mx_graalpython_bench_param.py`,
+so the folder has its own, `benchmarks.txt`: the benchmarks with their harness arguments (iterations
+and size). The size is part of the name on CodSpeed, for example
+`graalpython/com.oracle.graal.python.benchmarks/python/packages/pandas-csv.py::packages/pandas-csv[200000]`.
+
+The files are written for the fork and carry no copyright header. Upstream's style job, which this
+CI does not run (see below), would flag them for the missing Oracle header.
+
+To add a benchmark:
+
+1. Write `<name>.py` in the `packages` folder and add a line to its `benchmarks.txt`. Size it so that an
+   iteration takes about 0.2 to 3 s on GraalPy, and give it enough iterations that the second half,
+   which is what is reported, is warmed up (40 for the current ones).
+2. Run it with CPython, for example
+   `python graalpython/com.oracle.graal.python.benchmarks/python/harness.py graalpython/com.oracle.graal.python.benchmarks/python/packages/<name>.py -i 4 <size>`
+   with the `python` of a virtual environment that has the folder's `requirements.txt` installed. For a size
+   without an entry in `EXPECTED`, the first iteration prints its result and the others are compared
+   with it; copy it into `EXPECTED`.
+3. `python3 .github/elide/codspeed-bench --python <that environment's python> --suite packages --bench <name>`
+   runs it as the workflow does.
+4. A new package goes into the folder's `requirements.txt` with all its dependencies pinned.
+   A package with compiled code also needs a build line in the `wheels` job of `elide-codspeed.yml`.
+
+The versions are pinned in the folder's `requirements.txt`. The compiled packages are built
+from source with GraalPy's pip, which applies GraalPy's patch for the version from
+`graalpython/lib-graalpython/patches/metadata.toml`; a new version needs a patch there or none at
+all. A version change changes the measurement, so make it in a pull request of its own.
+
+The `wheels` job builds the wheels on the pool with the standalone of the run, every run, without a
+cache: numpy without an external BLAS or LAPACK (numpy's own slower fallback routines, which is why
+the linear algebra in `numpy-vectorized` is small), pandas against that numpy, lxml with libxml2 and
+libxslt linked in statically, pydantic-core and orjson with a Rust toolchain installed into the
+job's temporary directory. The pure Python packages come from PyPI as wheels. The job fails when a
+wheel needs a shared library other than glibc, libstdc++ and libgcc_s, because the benchmark host
+has only its base libraries and nothing can be installed there. `check` installs the wheels without
+a network (`package-venv`) and runs every package benchmark for four iterations; `walltime` installs them into a
+virtual environment in the job's temporary directory and runs the suite with that environment's
+interpreter (`--suite-python`).
+
+### Diagnosing noisy rows
+
+A manual run of `elide-codspeed.yml` with the input `diagnose` set measures without reporting to
+CodSpeed. Instead of `walltime`, its job `diagnose` runs the benchmarks selected by the input
+`bench` on the benchmark host once per interpreter option set named in `variants`, with the number
+of iterations of `iterations`:
+
+```sh
+gh workflow run elide-codspeed.yml --ref <branch> -f diagnose=true -f variants=gc-log,default
+```
+
+The option sets are the lines of `codspeed-diagnose.txt` (`all` runs every line). `codspeed-diagnose`
+runs `codspeed-bench` once per set with the set's options (`--python-arg`) and keeps, in the
+artifact `codspeed-diagnose-<attempt>`: every iteration's duration and the peak RSS of each
+benchmark process (`<set>/walltime-summary.json`), the complete output of each process with the GC
+log (`<set>/<benchmark>.log`), the collections per iteration (`diagnose-summary.json`) and the tables
+(`diagnose.md`, also on the run's summary page). `check` starts the interpreter once with every set
+first, so that an option the build does not know fails on the pool. `codspeed-bench` refuses
+`--python-arg` when it would report to CodSpeed.
 
 ## Runners
 

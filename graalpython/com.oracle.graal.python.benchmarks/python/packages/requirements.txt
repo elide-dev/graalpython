@@ -1,0 +1,15 @@
+# Packages of the suite "packages" with all their dependencies, pinned. The workflow
+# elide-codspeed.yml builds numpy, pandas, lxml, pydantic-core and orjson from source with the
+# standalone it measures (GraalPy's pip applies its patches from
+# graalpython/lib-graalpython/patches); the others are pure Python wheels from PyPI.
+numpy==2.5.4
+pandas==3.1.1
+python-dateutil==4.0.0
+tzdata==2026.6
+pydantic==2.14.3
+pydantic-core==2.50.4
+annotated-types==0.8.0
+typing-extensions==4.16.0
+typing-inspection==0.4.5
+orjson==3.13.0
+lxml==6.1.3

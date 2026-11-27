@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+# Runs benchmarks once per interpreter option set of codspeed-diagnose.txt with codspeed-bench and
+# relates every iteration's duration to the garbage collections in it. Used by the diagnose job of
+# .github/workflows/elide-codspeed.yml; runs on CPython. Nothing is reported to CodSpeed.
+#
+# For each option set the output directory gets <set>/walltime-summary.json (every iteration's
+# duration and the peak RSS of each benchmark process) and <set>/<benchmark>.log (the complete output
+# of the process, with the GC log for sets that have --vm.XX:+PrintGC). diagnose-summary.json has the
+# collections per iteration, diagnose.md the tables.
+import argparse
+import json
+import math
+import os
+import re
+import statistics
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DRIVER = os.path.join(HERE, "codspeed-bench")
+VARIANTS = os.path.join(HERE, "codspeed-diagnose.txt")
+GC_LOG = "--vm.XX:+PrintGC"
+
+ITERATION = re.compile(r"### iteration=(\d+), name=\S+, duration=([\d.]+)")
+# [0.160s] GC(1) Pause Full GC (java.lang.System.gc()) 66.17M->58.03M 42.525ms
+GC = re.compile(r"\[([\d.]+)s\] GC\((\d+)\) Pause (Incremental|Full) GC \((.*?)\) ([\d.]+)M->([\d.]+)M ([\d.]+)ms")
+BARRIER = re.compile(r"exceeding native_memory_gc_barrier \((\d+)\)")
+ENLARGE = re.compile(r"enlarging native_memory_gc_barrier to (\d+)")
+SYSTEM_GC = "java.lang.System.gc()"
+
+
+def read_variants(path):
+    variants = {}
+    with open(path) as f:
+        for line in f:
+            fields = line.split("#", 1)[0].split()
+            if fields:
+                variants[fields[0]] = fields[1:]
+    return variants
+
+
+def interpreter_args(options):
+    """Logged sets also run unbuffered, so that GC lines and iteration lines keep their order."""
+    return (["-u"] if GC_LOG in options else []) + options
+
+
+def environment(options):
+    env = dict(os.environ)
+    env.pop("GRAALPY_BENCH_REPORT_LIVE", None)
+    if GC_LOG in options:
+        env["GRAALPY_BENCH_REPORT_LIVE"] = "1"
+    return env
+
+
+def preflight(python, variants, names):
+    """Starts the interpreter once per option set: an option this build does not know fails here."""
+    failed = []
+    for name in names:
+        cmd = [python] + interpreter_args(variants[name]) + ["-c", "import sys; print(sys.version)"]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            ok, out = proc.returncode == 0, proc.stdout + proc.stderr
+        except subprocess.TimeoutExpired:
+            ok, out = False, "timeout"
+        print("%-16s %s  %s" % (name, "ok" if ok else "FAILED", out.strip().splitlines()[-1:] if out.strip() else ""),
+              flush=True)
+        if not ok:
+            print(out[-2000:], flush=True)
+            failed.append(name)
+    return failed
+
+
+def parse_log(text):
+    """-> one dict per iteration line: the collections and native memory events since the previous one."""
+    # What happens before the first iteration starts (imports, __setup__) is not counted.
+    start = text.find("### start benchmark")
+    text = text[start:] if start >= 0 else text
+    events = sorted([(m.start(), "it", m) for m in ITERATION.finditer(text)] +
+                    [(m.start(), "gc", m) for m in GC.finditer(text)] +
+                    [(m.start(), "barrier", m) for m in BARRIER.finditer(text)] +
+                    [(m.start(), "enlarge", m) for m in ENLARGE.finditer(text)], key=lambda e: e[0])
+
+    def fresh():
+        return {"incremental": 0, "incremental_ms": 0.0, "full_alloc": 0, "full_alloc_ms": 0.0,
+                "system_gc": 0, "system_gc_ms": 0.0, "barrier": 0, "enlarged_to": None, "heap_after_mb": None}
+
+    iterations, current = [], fresh()
+    for _, kind, m in events:
+        if kind == "it":
+            current["iteration"] = int(m.group(1))
+            iterations.append(current)
+            current = fresh()
+        elif kind == "gc":
+            pause = float(m.group(7))
+            if m.group(3) == "Incremental":
+                current["incremental"] += 1
+                current["incremental_ms"] += pause
+            elif m.group(4) == SYSTEM_GC:
+                current["system_gc"] += 1
+                current["system_gc_ms"] += pause
+            else:
+                current["full_alloc"] += 1
+                current["full_alloc_ms"] += pause
+            current["heap_after_mb"] = float(m.group(6))
+        elif kind == "barrier":
+            current["barrier"] += 1
+        else:
+            current["enlarged_to"] = int(m.group(1))
+    for it in iterations:
+        it["pause_ms"] = it["incremental_ms"] + it["full_alloc_ms"] + it["system_gc_ms"]
+    return iterations
+
+
+def quantile(values, p):
+    values = sorted(values)
+    position = p * (len(values) - 1)
+    low = int(position)
+    high = min(low + 1, len(values) - 1)
+    return values[low] + (position - low) * (values[high] - values[low])
+
+
+def five(values):
+    return {"median": quantile(values, .5), "q1": quantile(values, .25), "q3": quantile(values, .75),
+            "min": min(values), "max": max(values)}
+
+
+def correlation(xs, ys):
+    if len(xs) < 3 or statistics.pstdev(xs) == 0 or statistics.pstdev(ys) == 0:
+        return None
+    mx, my = statistics.fmean(xs), statistics.fmean(ys)
+    cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    return cov / math.sqrt(sum((x - mx) ** 2 for x in xs) * sum((y - my) ** 2 for y in ys))
+
+
+def analyse(output, names, variants):
+    results = {}
+    for name in names:
+        path = os.path.join(output, name, "walltime-summary.json")
+        if not os.path.exists(path):
+            results[name] = {"error": "no walltime-summary.json"}
+            continue
+        summary = json.load(open(path))
+        rows = {}
+        for uri, data in summary["measured"].items():
+            ident = uri.split("::", 1)[1].split("[", 1)[0]
+            durations = data["durations_s"]
+            warmup = len(durations) // 2
+            samples = durations[warmup:]
+            row = {"iterations": len(durations), "durations_s": durations, "samples": five(samples),
+                   "max_rss_mb": data["max_rss_kb"] / 1024}
+            log = os.path.join(output, name, ident.replace("/", "__") + ".log")
+            if GC_LOG in variants[name] and os.path.exists(log):
+                gcs = parse_log(open(log, errors="replace").read())
+                row["gc"] = gcs
+                if len(gcs) == len(durations):
+                    s = gcs[warmup:]
+                    pauses = [g["pause_ms"] / 1000 for g in s]
+                    row["gc_samples"] = {
+                        "system_gc_per_iteration": statistics.fmean(g["system_gc"] for g in s),
+                        "system_gc_s_per_iteration": statistics.fmean(g["system_gc_ms"] for g in s) / 1000,
+                        "full_alloc_per_iteration": statistics.fmean(g["full_alloc"] for g in s),
+                        "pause_s_per_iteration": statistics.fmean(pauses),
+                        "barrier_per_iteration": statistics.fmean(g["barrier"] for g in s),
+                        "pause_share": sum(pauses) / sum(samples),
+                        "corr_duration_pause": correlation(samples, pauses),
+                        "corr_duration_system_gc": correlation(samples, [g["system_gc"] for g in s]),
+                        "corr_duration_barrier": correlation(samples, [g["barrier"] for g in s]),
+                        "without_pause": five([d - p for d, p in zip(samples, pauses)]),
+                    }
+                else:
+                    row["gc_error"] = "%d iteration lines in the log, %d durations" % (len(gcs), len(durations))
+            rows[ident] = row
+        results[name] = {"options": variants[name], "rows": rows, "failed": summary["failed"]}
+    return results
+
+
+def fmt(x, digits=2):
+    return "-" if x is None else "%.*f" % (digits, x)
+
+
+def markdown(results, names):
+    lines = ["## Iteration durations (second half of the iterations), seconds", "",
+             "| Row | Option set | median | q1 | q3 | min | max | peak RSS MB |", "|---|---|---|---|---|---|---|---|"]
+    idents = sorted({i for n in names for i in results[n].get("rows", {})})
+    for ident in idents:
+        for name in names:
+            row = results[name].get("rows", {}).get(ident)
+            if row is None:
+                failed = ident in results[name].get("failed", [])
+                lines.append("| %s | %s | %s |  |  |  |  |  |" % (ident, name, "FAILED" if failed else "not run"))
+                continue
+            s = row["samples"]
+            lines.append("| %s | %s | %s | %s | %s | %s | %s | %.0f |" % (
+                ident, name, fmt(s["median"]), fmt(s["q1"]), fmt(s["q3"]), fmt(s["min"]), fmt(s["max"]), row["max_rss_mb"]))
+    lines += ["", "## Collections per iteration (second half), logged option sets", "",
+              "System.gc: full collections forced by GraalPy (native memory limit, background task); full alloc: "
+              "full collections of the GC policy; limit: crossings of the native memory limit; corr: correlation of "
+              "the iteration's duration with its total GC pause; without pause: duration minus all GC pauses.", "",
+              "| Row | Option set | System.gc | System.gc s | full alloc | pause s | pause share | limit | corr | "
+              "without pause median | q1 | q3 | min | max |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    for ident in idents:
+        for name in names:
+            row = results[name].get("rows", {}).get(ident)
+            if not row or "gc_samples" not in row:
+                if row and "gc_error" in row:
+                    lines.append("| %s | %s | %s |" % (ident, name, row["gc_error"]))
+                continue
+            g, w = row["gc_samples"], row["gc_samples"]["without_pause"]
+            lines.append("| %s | %s | %.1f | %s | %.1f | %s | %.0f%% | %.1f | %s | %s | %s | %s | %s | %s |" % (
+                ident, name, g["system_gc_per_iteration"], fmt(g["system_gc_s_per_iteration"]),
+                g["full_alloc_per_iteration"], fmt(g["pause_s_per_iteration"]), 100 * g["pause_share"],
+                g["barrier_per_iteration"], fmt(g["corr_duration_pause"]), fmt(w["median"]), fmt(w["q1"]),
+                fmt(w["q3"]), fmt(w["min"]), fmt(w["max"])))
+    lines += ["", "## Every iteration: duration s (System.gc collections, limit crossings, GC pause s)", ""]
+    for name in names:
+        for ident, row in sorted(results[name].get("rows", {}).items()):
+            if "gc" not in row or len(row["gc"]) != len(row["durations_s"]):
+                continue
+            cells = ["%.2f(%d,%d,%.2f)" % (d, g["system_gc"], g["barrier"], g["pause_ms"] / 1000)
+                     for d, g in zip(row["durations_s"], row["gc"])]
+            lines.append("- %s, %s: %s" % (ident, name, " ".join(cells)))
+    return "\n".join(lines) + "\n"
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Run benchmarks under several interpreter option sets.")
+    parser.add_argument("--python", required=True, help="interpreter (a virtual environment's python)")
+    parser.add_argument("--suite", default="packages")
+    parser.add_argument("--bench", required=True, help="regular expression matched against suite/name")
+    parser.add_argument("--variants", default="all", help="comma-separated names from codspeed-diagnose.txt")
+    parser.add_argument("--iterations", type=int, default=30)
+    parser.add_argument("--timeout", type=int, default=600, help="seconds per benchmark process")
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--preflight", action="store_true", help="only start the interpreter with each option set")
+    parser.add_argument("--analyse-only", action="store_true", help="only analyse an existing output directory")
+    args = parser.parse_args()
+    if os.environ.get("CODSPEED_PROFILE_FOLDER"):
+        parser.error("not to be run under CodSpeed: nothing measured here may be reported")
+
+    variants = read_variants(VARIANTS)
+    names = list(variants) if args.variants == "all" else [v.strip() for v in args.variants.split(",") if v.strip()]
+    unknown = [n for n in names if n not in variants]
+    if unknown:
+        parser.error("unknown option sets %s; known: %s" % (", ".join(unknown), ", ".join(variants)))
+
+    if args.preflight:
+        failed = preflight(args.python, variants, names)
+        return 1 if failed else 0
+
+    os.makedirs(args.output, exist_ok=True)
+    if not args.analyse_only:
+        for name in names:
+            out = os.path.join(args.output, name)
+            cmd = [sys.executable, DRIVER, "--python", args.python, "--suite", args.suite, "--bench", args.bench,
+                   "--min-iterations", str(args.iterations), "--max-iterations", str(args.iterations),
+                   "--timeout", str(args.timeout), "--label", name, "--output", out, "--log-dir", out,
+                   "--defer-failures"]
+            cmd += ["--python-arg=%s" % a for a in interpreter_args(variants[name])]
+            print("::group::%s" % name, flush=True)
+            status = subprocess.call(cmd, env=environment(variants[name]))
+            print("::endgroup::", flush=True)
+            print("%s: exit status %d" % (name, status), flush=True)
+            # Written after every option set, so that a cancelled job still leaves the tables so far.
+            results = analyse(args.output, names[:names.index(name) + 1], variants)
+            json.dump(results, open(os.path.join(args.output, "diagnose-summary.json"), "w"), indent=1)
+    results = analyse(args.output, names, variants)
+    json.dump(results, open(os.path.join(args.output, "diagnose-summary.json"), "w"), indent=1)
+    text = markdown(results, names)
+    with open(os.path.join(args.output, "diagnose.md"), "w") as f:
+        f.write(text)
+    print(text)
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+            f.write(text)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

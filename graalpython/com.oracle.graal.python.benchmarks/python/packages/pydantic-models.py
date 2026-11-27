@@ -1,0 +1,103 @@
+# pydantic: users with nested models, a field validator and constrained fields are validated from
+# Python dicts with model_validate and dumped with model_dump, and validated from JSON text with
+# model_validate_json and dumped with model_dump_json.
+#
+# Run with harness.py by .github/elide/codspeed-bench, see .github/elide/README.md. The argument is
+# the number of users.
+import math
+import random
+from datetime import datetime
+from typing import Optional
+
+from pydantic import BaseModel, Field, field_validator
+
+# number of users -> result of one iteration
+EXPECTED = {
+    10000: (64704, 574470.0, 2938636, 8571),
+}
+REL_TOL = 1e-9
+
+
+class Address(BaseModel):
+    street: str
+    city: str
+    zip: str = Field(pattern=r"^\d{5}$")
+
+
+class OrderLine(BaseModel):
+    sku: str
+    qty: int = Field(gt=0)
+    price: float
+
+
+class User(BaseModel):
+    id: int
+    name: str
+    email: str
+    created: datetime
+    tags: list[str] = []
+    address: Optional[Address] = None
+    orders: list[OrderLine] = []
+
+    @field_validator("name")
+    @classmethod
+    def strip(cls, v):
+        return v.strip()
+
+
+DICTS = []
+TEXTS = []
+_first = []
+
+
+def _check(size, result):
+    """Fails the benchmark on a wrong result. Floats differ in the last digits between platforms."""
+    expected = EXPECTED.get(size)
+    if expected is None:
+        if not _first:
+            _first.append(result)
+            print("### no expected result for size %d, the first iteration gave %r" % (size, result))
+        expected = _first[0]
+    if len(result) != len(expected) or not all(
+            math.isclose(r, e, rel_tol=REL_TOL) if isinstance(e, float) else r == e
+            for r, e in zip(result, expected)):
+        raise AssertionError("wrong result for size %d: %r, expected %r" % (size, result, expected))
+
+
+def __setup__(size=10000):
+    r = random.Random(3)
+    for i in range(size):
+        d = {
+            "id": i, "name": "  user%d " % i, "email": "u%d@example.com" % i,
+            "created": "2024-%02d-%02dT03:04:05" % (r.randint(1, 12), r.randint(1, 28)),
+            "tags": ["t%d" % r.randint(0, 9) for _ in range(3)],
+            "address": {"street": "%d Main" % i, "city": r.choice(["Prague", "Brno"]), "zip": "%05d" % (10000 + i)},
+            "orders": [{"sku": "S%d" % j, "qty": j + 1, "price": j * 2.5} for j in range(r.randint(1, 6))],
+        }
+        if i % 7 == 0:
+            del d["address"]
+        DICTS.append(d)
+        TEXTS.append(User.model_validate(d).model_dump_json())
+
+
+def measure(size):
+    orders = 0
+    total = 0.0
+    for d in DICTS:
+        u = User.model_validate(d)
+        dumped = u.model_dump()
+        orders += len(u.orders) + len(dumped["tags"])
+        total += sum(o["qty"] * o["price"] for o in dumped["orders"])
+    text_len = 0
+    named = 0
+    for text in TEXTS:
+        u = User.model_validate_json(text)
+        text_len += len(u.model_dump_json())
+        named += u.name.startswith("user") and u.address is not None
+    result = (orders, total, text_len, named)
+    _check(size, result)
+    return result
+
+
+def __benchmark__(size=10000):
+    return measure(size)

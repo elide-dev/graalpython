@@ -7,6 +7,9 @@
 # samples. One CodSpeed walltime result file is written per benchmark to
 # $CODSPEED_PROFILE_FOLDER/results. Without that variable (a local run) nothing is reported. --output
 # keeps a copy of all statistics in one file, whether or not CodSpeed takes them.
+#
+# --python-arg passes options to the interpreter, for diagnostic runs (codspeed-diagnose); such runs
+# are never reported to CodSpeed.
 
 #!/usr/bin/env python3
 import argparse
@@ -15,9 +18,11 @@ import json
 import math
 import os
 import re
+import signal
 import statistics
 import subprocess
 import sys
+import threading
 import time
 import types
 
@@ -31,6 +36,13 @@ SUITES = {
     "micro-native": ("MICRO_NATIVE_BENCHMARKS", "micro"),
     "meso": ("MESO_BENCHMARKS", "meso"),
     "micro": ("MICRO_BENCHMARKS", "micro"),
+}
+# The fork's suites: suite name -> directory under BENCH_REL. Upstream's table file is not edited, so
+# the directory has its own table, benchmarks.txt.
+OWN_SUITES = {
+    # Benchmarks of real packages. They need an interpreter that has the packages of
+    # requirements.txt in that directory installed, see --suite-python.
+    "packages": "packages",
 }
 DEFAULT_SUITES = ["micro-native", "meso"]
 
@@ -64,6 +76,17 @@ def load_table(name):
     return getattr(module, name)
 
 
+def load_own_table(directory):
+    """Reads benchmarks.txt of a suite of the fork: lines of a name and its harness arguments."""
+    table = {}
+    with open(os.path.join(REPO, BENCH_REL, directory, "benchmarks.txt")) as f:
+        for line in f:
+            fields = line.split("#", 1)[0].split()
+            if fields:
+                table[fields[0]] = fields[1:]
+    return table
+
+
 def split_args(harness_args):
     """-> (iterations, other harness options, workload arguments)"""
     iterations, options, workload = 1, [], []
@@ -87,8 +110,11 @@ def split_args(harness_args):
 
 def benchmarks(suites, pattern):
     for suite in suites:
-        table, directory = SUITES[suite]
-        for name, harness_args in load_table(table).items():
+        if suite in OWN_SUITES:
+            directory, table = OWN_SUITES[suite], load_own_table(OWN_SUITES[suite])
+        else:
+            directory, table = SUITES[suite][1], load_table(SUITES[suite][0])
+        for name, harness_args in table.items():
             ident = "%s/%s" % (suite, name)
             if pattern and not re.search(pattern, ident):
                 continue
@@ -97,8 +123,8 @@ def benchmarks(suites, pattern):
             # The identity CodSpeed keeps the history under. The workload size is part of it, the
             # iteration count is not.
             uri = "%s::%s%s" % (rel, ident, "[%s]" % ",".join(workload) if workload else "")
-            yield {"id": ident, "uri": uri, "file": os.path.join(REPO, rel), "iterations": iterations,
-                   "options": options, "workload": workload}
+            yield {"id": ident, "suite": suite, "uri": uri, "file": os.path.join(REPO, rel),
+                   "iterations": iterations, "options": options, "workload": workload}
 
 
 def quantile(values, p):
@@ -126,10 +152,13 @@ def walltime_stats(durations_s):
     }
 
 
-def run_one(python, bench, min_iterations, timeout):
-    """-> (status, durations in seconds, pid, output tail)"""
+def run_one(python, bench, min_iterations, max_iterations, timeout, python_args=(), log=None):
+    """-> (status, durations in seconds, pid, output tail, peak RSS of the process in KiB)"""
     iterations = max(bench["iterations"], min_iterations)
-    cmd = [python, HARNESS, bench["file"], "-i", str(iterations)] + bench["options"] + bench["workload"]
+    if max_iterations:
+        iterations = min(iterations, max_iterations)
+    cmd = ([python] + list(python_args) + [HARNESS, bench["file"], "-i", str(iterations)] + bench["options"]
+           + bench["workload"])
     # With CI set the harness stops early once long iterations look stable; every iteration is wanted here.
     env = {k: v for k, v in os.environ.items() if k != "CI"}
     # Some C API benchmarks call functions that the public headers do not declare. GCC 14 and
@@ -137,22 +166,43 @@ def run_one(python, bench, min_iterations, timeout):
     env["CFLAGS"] = (env.get("CFLAGS", "") + " -Wno-error=implicit-function-declaration").strip()
     proc = subprocess.Popen(cmd, cwd=os.path.dirname(bench["file"]), env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, errors="replace")
+    # The process is reaped with wait4 for its resource usage: getrusage(RUSAGE_CHILDREN) would give
+    # the maximum over all benchmarks run so far.
+    timed_out = threading.Event()
+
+    def kill():
+        # Not proc.kill(): that may reap the process before wait4 does.
+        timed_out.set()
+        try:
+            os.kill(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    timer = threading.Timer(timeout, kill)
+    timer.start()
     try:
-        out, _ = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        out, _ = proc.communicate()
-        return "timeout after %ds" % timeout, [], proc.pid, out[-3000:]
+        out = proc.stdout.read()
+        _, status, usage = os.wait4(proc.pid, 0)
+        proc.returncode = os.waitstatus_to_exitcode(status)
+    finally:
+        timer.cancel()
+        proc.stdout.close()
+    max_rss_kb = usage.ru_maxrss  # KiB on Linux, bytes on macOS
+    if log:
+        with open(log, "w") as f:
+            f.write(" ".join(cmd) + "\n" + out)
+    if timed_out.is_set():
+        return "timeout after %ds" % timeout, [], proc.pid, out[-3000:], max_rss_kb
     if proc.returncode != 0:
-        return "exit %d" % proc.returncode, [], proc.pid, out[-3000:]
+        return "exit %d" % proc.returncode, [], proc.pid, out[-3000:], max_rss_kb
     # Full precision; the per-iteration lines are rounded to a millisecond.
     match = re.search(r"^### RAW DURATIONS: \[([^\]]*)\]", out, re.M)
     durations = [float(x) for x in match.group(1).split(",")] if match and match.group(1).strip() else []
     if len(durations) != iterations:
-        return "%d of %d iterations reported" % (len(durations), iterations), [], proc.pid, out[-3000:]
+        return "%d of %d iterations reported" % (len(durations), iterations), [], proc.pid, out[-3000:], max_rss_kb
     if any(not math.isfinite(d) or d <= 0 for d in durations):
-        return "non-positive duration", [], proc.pid, out[-3000:]
-    return "ok", durations, proc.pid, ""
+        return "non-positive duration", [], proc.pid, out[-3000:], max_rss_kb
+    return "ok", durations, proc.pid, "", max_rss_kb
 
 
 def write_result(folder, bench, stats, pid):
@@ -174,9 +224,19 @@ def write_result(folder, bench, stats, pid):
 def main():
     parser = argparse.ArgumentParser(description="Report GraalPy harness benchmarks to CodSpeed (walltime).")
     parser.add_argument("--python", required=True, help="interpreter to measure")
-    parser.add_argument("--suite", nargs="+", choices=sorted(SUITES), default=DEFAULT_SUITES)
+    parser.add_argument("--suite-python", action="append", default=[], metavar="SUITE=PATH",
+                        help="interpreter for the benchmarks of one suite instead of --python, e.g. a "
+                             "virtual environment of it with the packages the suite needs; repeatable")
+    parser.add_argument("--suite", nargs="+", choices=sorted(SUITES) + sorted(OWN_SUITES), default=DEFAULT_SUITES)
     parser.add_argument("--bench", help="regular expression matched against suite/name")
+    parser.add_argument("--python-arg", action="append", default=[], metavar="ARG",
+                        help="option for the interpreter, before the harness, e.g. --python-arg=--vm.XX:+PrintGC; "
+                             "repeatable. Not allowed when reporting to CodSpeed")
+    parser.add_argument("--label", help="name of this configuration in the output and walltime-summary.json")
+    parser.add_argument("--log-dir", help="directory for the complete output of every benchmark process")
     parser.add_argument("--min-iterations", type=int, default=MIN_ITERATIONS)
+    parser.add_argument("--max-iterations", type=int,
+                        help="run at most this many iterations per benchmark, for a quick check")
     parser.add_argument("--timeout", type=int, default=900, help="seconds per benchmark process")
     parser.add_argument("--output", help="directory for walltime-summary.json")
     parser.add_argument("--defer-failures", action="store_true",
@@ -188,10 +248,19 @@ def main():
         parser.error("--defer-failures needs --output")
     if args.min_iterations < 4:
         parser.error("--min-iterations must be at least 4: two samples are the minimum")
+    if args.max_iterations is not None and args.max_iterations < 4:
+        parser.error("--max-iterations must be at least 4: two samples are the minimum")
 
-    if os.path.exists(args.python):
-        # Each benchmark runs in its own directory.
-        args.python = os.path.abspath(args.python)
+    pythons = {}
+    for item in args.suite_python:
+        suite, _, path = item.partition("=")
+        if suite not in SUITES and suite not in OWN_SUITES or not path:
+            parser.error("--suite-python takes SUITE=PATH with a known suite: %s" % item)
+        pythons[suite] = path
+    # Each benchmark runs in its own directory.
+    absolute = lambda path: os.path.abspath(path) if os.path.exists(path) else path
+    args.python = absolute(args.python)
+    pythons = {suite: absolute(path) for suite, path in pythons.items()}
     selected = list(benchmarks(args.suite, args.bench))
     if not selected:
         parser.error("no benchmark selected")
@@ -201,6 +270,13 @@ def main():
         return 0
 
     folder = os.environ.get("CODSPEED_PROFILE_FOLDER")
+    if folder and args.python_arg:
+        parser.error("--python-arg changes what is measured: not allowed with CODSPEED_PROFILE_FOLDER set")
+    if args.log_dir:
+        os.makedirs(args.log_dir, exist_ok=True)
+    if args.label:
+        print("configuration %s: interpreter options %s" % (args.label, " ".join(args.python_arg) or "none"),
+              flush=True)
     if not folder:
         print("CODSPEED_PROFILE_FOLDER is not set: nothing is reported to CodSpeed", flush=True)
     failed, measured, summary = [], 0, {}
@@ -210,7 +286,10 @@ def main():
             print("%-48s %10s %10s %7s  skipped: %s" % (bench["id"], "-", "-", "-", SKIP[bench["id"]]), flush=True)
             continue
         started = time.monotonic()
-        status, durations, pid, tail = run_one(args.python, bench, args.min_iterations, args.timeout)
+        log = os.path.join(args.log_dir, bench["id"].replace("/", "__") + ".log") if args.log_dir else None
+        status, durations, pid, tail, max_rss_kb = run_one(pythons.get(bench["suite"], args.python), bench,
+                                                           args.min_iterations, args.max_iterations, args.timeout,
+                                                           args.python_arg, log)
         if status != "ok":
             failed.append(bench["id"])
             print("%-48s %10s %10s %7s  FAILED: %s" % (bench["id"], "-", "-", "-", status), flush=True)
@@ -219,14 +298,18 @@ def main():
         stats = walltime_stats(durations)
         if folder:
             write_result(folder, bench, stats, pid)
-        summary[bench["uri"]] = stats
+        # The summary also keeps every iteration's duration, which CodSpeed does not take.
+        summary[bench["uri"]] = dict(stats, durations_s=durations, max_rss_kb=max_rss_kb)
         measured += 1
         print("%-48s %10.4f %10.4f %7d  ok (%ds)" % (bench["id"], stats["median_ns"] / 1e9, stats["stdev_ns"] / 1e9,
                                                       stats["rounds"], time.monotonic() - started), flush=True)
     if args.output:
         os.makedirs(args.output, exist_ok=True)
         with open(os.path.join(args.output, "walltime-summary.json"), "w") as f:
-            json.dump({"measured": summary, "failed": failed}, f, indent=1)
+            result = {"measured": summary, "failed": failed}
+            if args.label or args.python_arg:
+                result.update(label=args.label, python_args=args.python_arg)
+            json.dump(result, f, indent=1)
     print("%d measured, %d failed%s" % (measured, len(failed), ": " + ", ".join(failed) if failed else ""))
     if not measured:
         return 1
