@@ -1,0 +1,20 @@
+# Interpreter option sets for codspeed-diagnose: one line per set, a name followed by the options
+# given to the interpreter before the harness. Run in the order listed (or the order given with
+# --variants). Nothing measured with these is reported to CodSpeed.
+#
+# A set with --vm.XX:+PrintGC also runs with -u and live iteration reports, so that every GC line in
+# the output comes after the iteration lines that precede it in time; the GC lines between two
+# iteration lines belong to the second iteration. The logger python.capi.PythonCextBuiltins at
+# level CONFIG prints one line each time a native allocation crosses the native memory limit
+# (--python.InitialNativeMemory), after which GraalPy forces up to seven full collections.
+# "default" is run exactly as the benchmark job runs, without any of this.
+#
+# name           options
+gc-log           --vm.XX:+PrintGC --log.python.capi.PythonCextBuiltins.level=CONFIG
+no-explicit-gc   --vm.XX:+DisableExplicitGC --vm.XX:+PrintGC --log.python.capi.PythonCextBuiltins.level=CONFIG
+no-bg-task       --experimental-options --python.BackgroundGCTask=false --vm.XX:+PrintGC --log.python.capi.PythonCextBuiltins.level=CONFIG
+default
+native-8g        --experimental-options --python.BackgroundGCTask=false --python.InitialNativeMemory=8589934592 --vm.XX:+PrintGC --log.python.capi.PythonCextBuiltins.level=CONFIG
+# The serial GC's default policy (Adaptive2) only takes a maximum young generation size; the policy
+# BySpaceAndTime keeps the young generation at that size. Changes the policy and the size together.
+young-1g         --experimental-options --python.BackgroundGCTask=false --vm.XX:InitialCollectionPolicy=BySpaceAndTime --vm.Xmn1g --vm.XX:+PrintGC --log.python.capi.PythonCextBuiltins.level=CONFIG

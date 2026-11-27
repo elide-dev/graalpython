@@ -11,12 +11,35 @@ name: CodSpeed benchmarks
 #
 # Pull requests are measured only when labelled "perf:bench", and never from a fork: both the build
 # and the measurement run on self-hosted runners.
+#
+# A manual run with "diagnose" set reports nothing to CodSpeed: instead of the walltime job, the job
+# diagnose runs the selected benchmarks once per interpreter option set of
+# .github/elide/codspeed-diagnose.txt and keeps every iteration's duration, the GC log and the peak
+# RSS as an artifact, for example
+#   gh workflow run elide-codspeed.yml --ref <branch> -f diagnose=true -f variants=gc-log,default
 on:
   push:
     branches: [develop, 'elide-*.x']
   pull_request:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
+    inputs:
+      diagnose:
+        description: Run the diagnose job instead of the measurement; nothing is reported to CodSpeed
+        type: boolean
+        default: false
+      bench:
+        description: 'diagnose: regular expression matched against suite/name'
+        type: string
+        default: '^packages/(pydantic-json|orjson-roundtrip|pandas-csv|pandas-str|pandas-groupby-merge|lxml-xpath)$'
+      variants:
+        description: 'diagnose: comma-separated option sets of .github/elide/codspeed-diagnose.txt, or all'
+        type: string
+        default: all
+      iterations:
+        description: 'diagnose: iterations per benchmark and option set'
+        type: string
+        default: '30'
 
 permissions:
   contents: read
@@ -248,8 +271,19 @@ jobs:
           python3 .github/elide/codspeed-bench --python "$RUNNER_TEMP/venv/bin/python" --suite packages \
             --max-iterations 4
 
+      # So that an option this build does not know fails here and not on the benchmark host.
+      - name: Start the interpreter with each diagnose option set
+        if: ${{ inputs.diagnose }}
+        env:
+          VARIANTS: ${{ inputs.variants }}
+          BENCH: ${{ inputs.bench }}
+        run: |
+          python3 .github/elide/codspeed-diagnose --preflight --python "$RUNNER_TEMP/venv/bin/python" \
+            --variants "$VARIANTS" --bench "$BENCH" --output "$RUNNER_TEMP/diagnose"
+
   walltime:
     name: walltime
+    if: ${{ !inputs.diagnose }}
     needs: [build, wheels, check]
     runs-on: ${{ vars.CODSPEED_WALLTIME_RUNNER || 'linux-amd64-bench' }}
     timeout-minutes: 120
@@ -319,5 +353,58 @@ jobs:
         with:
           name: codspeed-walltime-${{ github.run_attempt }}
           path: ${{ env.BENCH_OUTPUT }}/*.json
+          retention-days: 14
+          if-no-files-found: warn
+
+  # Manual runs with "diagnose" set, see the top of the file. Same host and packages as walltime, no
+  # CodSpeed action and no token for it.
+  diagnose:
+    name: diagnose
+    if: ${{ inputs.diagnose }}
+    needs: [build, wheels, check]
+    runs-on: ${{ vars.CODSPEED_WALLTIME_RUNNER || 'linux-amd64-bench' }}
+    timeout-minutes: 100
+    env:
+      DIAGNOSE_OUTPUT: ${{ github.workspace }}/diagnose-results
+    steps:
+      - name: Clean workspace
+        run: find "${GITHUB_WORKSPACE:?}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: codspeed-graalpy-native-standalone
+          path: ${{ runner.temp }}
+
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: codspeed-package-wheels
+          path: ${{ runner.temp }}/wheelhouse
+
+      - name: Install the packages
+        run: |
+          uname -a; nproc; free -m
+          tar -C "$RUNNER_TEMP" -xf "$RUNNER_TEMP/graalpy-native-standalone.tar"
+          .github/elide/package-venv "$RUNNER_TEMP/GRAALPY_NATIVE_STANDALONE/bin/graalpy" "$RUNNER_TEMP/venv" \
+            "$RUNNER_TEMP/wheelhouse"
+
+      - name: Run the option sets
+        timeout-minutes: 90
+        env:
+          VARIANTS: ${{ inputs.variants }}
+          BENCH: ${{ inputs.bench }}
+          ITERATIONS: ${{ inputs.iterations }}
+        run: |
+          python3 .github/elide/codspeed-diagnose --python "$RUNNER_TEMP/venv/bin/python" \
+            --variants "$VARIANTS" --bench "$BENCH" --iterations "$ITERATIONS" --output "$DIAGNOSE_OUTPUT"
+
+      # Also after a timeout: the summary is written after every option set.
+      - name: Keep the results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: codspeed-diagnose-${{ github.run_attempt }}
+          path: ${{ env.DIAGNOSE_OUTPUT }}
           retention-days: 14
           if-no-files-found: warn

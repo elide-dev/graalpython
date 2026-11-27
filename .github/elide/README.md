@@ -75,9 +75,10 @@ merges from upstream cannot conflict with it:
 
 Each file is in the format of upstream's `harness.py`, like the files in `meso` and `micro`:
 `__setup__(size)` builds the input from a fixed seed and is not measured, `__benchmark__(size)` is
-one measured iteration and calls `measure(size)`. Benchmarks whose data are large repeat the work
-`ROUNDS` times per iteration on smaller data instead: on GraalPy, iterations over data with
-millions of objects varied by a factor of up to ten. Every iteration (or round) compares its result
+one measured iteration and calls `measure(size)`. Some benchmarks repeat the work `ROUNDS` times
+per iteration on smaller data. That was meant to make their iterations on GraalPy steadier, and it
+did not: orjson-roundtrip, pandas-csv, pandas-str, pandas-groupby-merge and lxml-xpath still vary
+by up to a factor of ten from one iteration to the next (see "Diagnosing noisy rows"). Every iteration (or round) compares its result
 with `EXPECTED[size]` in the file and fails the benchmark when it differs; floats are compared with a
 relative tolerance, because they differ in the last digits between platforms. Unlike upstream's
 `macro` benchmarks, the files do not call `ensure_packages`: the packages are installed before the
@@ -121,6 +122,26 @@ has only its base libraries and nothing can be installed there. `check` installs
 a network (`package-venv`) and runs every package benchmark for four iterations; `walltime` installs them into a
 virtual environment in the job's temporary directory and runs the suite with that environment's
 interpreter (`--suite-python`).
+
+### Diagnosing noisy rows
+
+A manual run of `elide-codspeed.yml` with the input `diagnose` set measures without reporting to
+CodSpeed. Instead of `walltime`, its job `diagnose` runs the benchmarks selected by the input
+`bench` on the benchmark host once per interpreter option set named in `variants`, with the number
+of iterations of `iterations`:
+
+```sh
+gh workflow run elide-codspeed.yml --ref <branch> -f diagnose=true -f variants=gc-log,default
+```
+
+The option sets are the lines of `codspeed-diagnose.txt` (`all` runs every line). `codspeed-diagnose`
+runs `codspeed-bench` once per set with the set's options (`--python-arg`) and keeps, in the
+artifact `codspeed-diagnose-<attempt>`: every iteration's duration and the peak RSS of each
+benchmark process (`<set>/walltime-summary.json`), the complete output of each process with the GC
+log (`<set>/<benchmark>.log`), the collections per iteration (`diagnose-summary.json`) and the tables
+(`diagnose.md`, also on the run's summary page). `check` starts the interpreter once with every set
+first, so that an option the build does not know fails on the pool. `codspeed-bench` refuses
+`--python-arg` when it would report to CodSpeed.
 
 ## Runners
 
