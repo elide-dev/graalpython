@@ -1,8 +1,8 @@
 # pandas: text cleaning with the Series.str methods (strip, lower, contains, extract, split,
 # replace, title, len, slice) and parsing of date strings with to_datetime.
 #
-# Loaded by upstream's harness.py (see .github/elide/README.md). The argument is the number of
-# rows.
+# Run with harness.py by .github/elide/codspeed-bench, see .github/elide/README.md. The argument is
+# the number of rows.
 import math
 import os
 
@@ -37,7 +37,7 @@ def _check(size, result):
         raise AssertionError("wrong result for size %d: %r, expected %r" % (size, result, expected))
 
 
-def __setup__(size):
+def __setup__(size=60000):
     global TEXT, DATES
     rs = np.random.RandomState(6)
     first = rs.choice(["  John", "jane ", "ALICE", "Bob", "Éva", "Zoë "], size)
@@ -49,7 +49,7 @@ def __setup__(size):
     DATES = pd.Series([(base + pd.Timedelta(seconds=int(s))).strftime("%Y-%m-%d %H:%M:%S") for s in seconds])
 
 
-def __benchmark__(size):
+def measure(size):
     s = TEXT.str.strip().str.lower()
     corp = s.str.contains("corp.org", regex=False)
     emails = s.str.extract(r"<([^>]+)>", expand=False)
@@ -64,3 +64,7 @@ def __benchmark__(size):
               len(by_month), int(days.sum()))
     _check(size, result)
     return result
+
+
+def __benchmark__(size=60000):
+    return measure(size)

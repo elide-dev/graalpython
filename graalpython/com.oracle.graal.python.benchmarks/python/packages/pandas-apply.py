@@ -1,8 +1,8 @@
 # pandas with Python functions per row or element: DataFrame.apply(axis=1), Series.apply and
 # Series.map with lambdas, iterrows and itertuples.
 #
-# Loaded by upstream's harness.py (see .github/elide/README.md). The argument is the number of
-# rows.
+# Run with harness.py by .github/elide/codspeed-bench, see .github/elide/README.md. The argument is
+# the number of rows.
 import math
 import os
 
@@ -44,14 +44,14 @@ def classify(row):
     return "regular"
 
 
-def __setup__(size):
+def __setup__(size=20000):
     global DF
     rs = np.random.RandomState(5)
     DF = pd.DataFrame({"age": rs.randint(18, 80, size), "income": rs.randint(10000, 150000, size),
                        "score": rs.rand(size).round(4), "name": ["user_%d" % i for i in range(size)]})
 
 
-def __benchmark__(size):
+def measure(size):
     df = DF.copy()
     df["cls"] = df.apply(classify, axis=1)
     df["tax"] = df["income"].apply(lambda x: x * 0.15 if x < 50000 else x * 0.23)
@@ -67,3 +67,7 @@ def __benchmark__(size):
               int(counts["young-rich"]))
     _check(size, result)
     return result
+
+
+def __benchmark__(size=20000):
+    return measure(size)

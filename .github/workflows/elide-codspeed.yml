@@ -76,7 +76,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  # The packages of the suite "packages" (.github/elide/benchmarks/packages) have no wheels for this
+  # The packages of the suite "packages" (graalpython/com.oracle.graal.python.benchmarks/python/packages) have no wheels for this
   # interpreter. Their compiled ones are built from source with the standalone just built, with
   # GraalPy's patches, and every wheel is collected into one artifact that the benchmark host
   # installs from without a network. Nothing is cached: the wheels depend on the interpreter build.
@@ -86,7 +86,7 @@ jobs:
     runs-on: ${{ vars.CODSPEED_BUILD_RUNNER || 'linux-amd64-cipool' }}
     timeout-minutes: 90
     env:
-      REQUIREMENTS: .github/elide/benchmarks/packages/requirements.txt
+      REQUIREMENTS: graalpython/com.oracle.graal.python.benchmarks/python/packages/requirements.txt
       # pydantic-core and orjson are written in Rust; orjson needs at least 1.95.
       RUST_VERSION: 1.100.0
     steps:
@@ -234,7 +234,7 @@ jobs:
         run: |
           "$RUNNER_TEMP/GRAALPY_NATIVE_STANDALONE/bin/graalpy" -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install --no-cache-dir --no-index --find-links "$RUNNER_TEMP/wheelhouse" \
-            -r .github/elide/benchmarks/packages/requirements.txt
+            -r graalpython/com.oracle.graal.python.benchmarks/python/packages/requirements.txt
           "$RUNNER_TEMP/venv/bin/python" -c 'import lxml.etree, lxml.html, numpy, orjson, pandas, pydantic'
           python3 .github/elide/codspeed-bench --python "$RUNNER_TEMP/venv/bin/python" --suite packages \
             --max-iterations 4
@@ -274,7 +274,7 @@ jobs:
         run: |
           "$RUNNER_TEMP/GRAALPY_NATIVE_STANDALONE/bin/graalpy" -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install --no-cache-dir --no-index --find-links "$RUNNER_TEMP/wheelhouse" \
-            -r .github/elide/benchmarks/packages/requirements.txt
+            -r graalpython/com.oracle.graal.python.benchmarks/python/packages/requirements.txt
 
       - name: Measure
         # Action and runner versions already in use on this host.

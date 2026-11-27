@@ -1,8 +1,8 @@
 # pandas: read_csv of an in-memory CSV (type inference, a date column, usecols with a categorical
 # dtype), a filter, to_csv of the result and a groupby on the categorical column.
 #
-# Loaded by upstream's harness.py (see .github/elide/README.md). The argument is the number of
-# rows.
+# Run with harness.py by .github/elide/codspeed-bench, see .github/elide/README.md. The argument is
+# the number of rows.
 import io
 import math
 import os
@@ -37,7 +37,7 @@ def _check(size, result):
         raise AssertionError("wrong result for size %d: %r, expected %r" % (size, result, expected))
 
 
-def __setup__(size):
+def __setup__(size=200000):
     global CSV
     rs = np.random.RandomState(4)
     df = pd.DataFrame({
@@ -52,7 +52,7 @@ def __setup__(size):
     CSV = df.to_csv(index=False)
 
 
-def __benchmark__(size):
+def measure(size):
     df = pd.read_csv(io.StringIO(CSV), parse_dates=["ts"])
     df2 = pd.read_csv(io.StringIO(CSV), usecols=["id", "city", "amount"], dtype={"city": "category"})
     out = df[df["flag"]].to_csv(index=False, float_format="%.2f")
@@ -61,3 +61,7 @@ def __benchmark__(size):
               int(df["comment"].isna().sum()), float(by_city.sum()), float(by_city["Brno"]))
     _check(size, result)
     return result
+
+
+def __benchmark__(size=200000):
+    return measure(size)

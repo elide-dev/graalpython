@@ -2,8 +2,8 @@
 # particle (arithmetic, indexing, linalg.norm, dot, stack, mean, clip). The time goes into calls
 # from Python into numpy, not into numpy's loops.
 #
-# Loaded by upstream's harness.py (see .github/elide/README.md). The argument is the number of
-# particles.
+# Run with harness.py by .github/elide/codspeed-bench, see .github/elide/README.md. The argument is
+# the number of particles.
 import math
 import os
 
@@ -38,14 +38,14 @@ def _check(size, result):
         raise AssertionError("wrong result for size %d: %r, expected %r" % (size, result, expected))
 
 
-def __setup__(size):
+def __setup__(size=600):
     global POS, VEL
     rs = np.random.RandomState(1)
     POS = [rs.rand(3) for _ in range(size)]
     VEL = [rs.rand(3) - 0.5 for _ in range(size)]
 
 
-def __benchmark__(size):
+def measure(size):
     pos = [p.copy() for p in POS]
     vel = [v.copy() for v in VEL]
     g = np.array([0.0, 0.0, -9.81])
@@ -71,3 +71,7 @@ def __benchmark__(size):
     result = (energy, bounces)
     _check(size, result)
     return result
+
+
+def __benchmark__(size=600):
+    return measure(size)

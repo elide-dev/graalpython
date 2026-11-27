@@ -2,8 +2,8 @@
 # XPath with variables), iterfind with edits, serialization and parse of the result, and lxml.html
 # parsing, link extraction and serialization of an HTML table.
 #
-# Loaded by upstream's harness.py (see .github/elide/README.md). The argument is the number of
-# items in the XML document.
+# Run with harness.py by .github/elide/codspeed-bench, see .github/elide/README.md. The argument is
+# the number of items in the XML document.
 import math
 import random
 
@@ -35,7 +35,7 @@ def _check(size, result):
         raise AssertionError("wrong result for size %d: %r, expected %r" % (size, result, expected))
 
 
-def __setup__(size):
+def __setup__(size=10000):
     global XML_DOC, HTML_DOC
     r = random.Random(61)
     root = etree.Element("{%s}inventory" % NS, nsmap={"inv": NS})
@@ -53,7 +53,7 @@ def __setup__(size):
                 "<p>Text <b>bold</b><br>tail</div></body></html>" % rows)
 
 
-def __benchmark__(size):
+def measure(size):
     ns = {"i": NS}
     root = etree.fromstring(XML_DOC)
     low = root.xpath("//i:item[number(i:qty) < 50]/@sku", namespaces=ns)
@@ -75,3 +75,7 @@ def __benchmark__(size):
     result = (len(low), float(total), fragile, names, len(out), count, len(links), prices, len(text), len(serialized))
     _check(size, result)
     return result
+
+
+def __benchmark__(size=10000):
+    return measure(size)

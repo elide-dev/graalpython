@@ -1,8 +1,8 @@
 # orjson: dumps and loads of a nested document tree (dicts, lists, strings with non-ASCII text,
 # floats, None), also with OPT_INDENT_2 | OPT_SORT_KEYS, and dumps of a list of dataclasses.
 #
-# Loaded by upstream's harness.py (see .github/elide/README.md). The argument is the number of
-# users in the document.
+# Run with harness.py by .github/elide/codspeed-bench, see .github/elide/README.md. The argument is
+# the number of users in the document.
 import dataclasses
 import math
 import random
@@ -62,14 +62,14 @@ def make_doc(n, seed):
     return {"version": 3, "generated": "2024-05-06T07:08:09Z", "users": users}
 
 
-def __setup__(size):
+def __setup__(size=10000):
     global DOC, EVENTS, BLOB
     DOC = make_doc(size, 11)
     EVENTS = [Event(e["t"], e["kind"], e["value"]) for u in DOC["users"] for e in u["events"]]
     BLOB = orjson.dumps(DOC)
 
 
-def __benchmark__(size):
+def measure(size):
     dumped = 0
     loaded = 0
     for _ in range(4):
@@ -83,3 +83,7 @@ def __benchmark__(size):
     result = (dumped, loaded, pretty, events, tags, balance)
     _check(size, result)
     return result
+
+
+def __benchmark__(size=10000):
+    return measure(size)

@@ -1,8 +1,8 @@
 # pandas: merges of a fact table with two dimension tables, groupby with named aggregations,
 # nlargest, pivot_table and a grouped rank.
 #
-# Loaded by upstream's harness.py (see .github/elide/README.md). The argument is the number of
-# rows of the fact table.
+# Run with harness.py by .github/elide/codspeed-bench, see .github/elide/README.md. The argument is
+# the number of rows of the fact table.
 import math
 import os
 
@@ -46,7 +46,7 @@ def _check(size, result):
         raise AssertionError("wrong result for size %d: %r, expected %r" % (size, result, expected))
 
 
-def __setup__(size):
+def __setup__(size=600000):
     global SALES, CUSTOMERS, PRODUCTS
     rs = np.random.RandomState(3)
     SALES = pd.DataFrame({
@@ -63,7 +63,7 @@ def __setup__(size):
                              "cost": rs.randint(1, 6000, 700) / 100})
 
 
-def __benchmark__(size):
+def measure(size):
     df = SALES.merge(CUSTOMERS, on="cust_id", how="left").merge(PRODUCTS, on="prod_id", how="inner")
     df["revenue"] = df["qty"] * df["price"]
     df["margin"] = df["revenue"] - df["qty"] * df["cost"]
@@ -76,3 +76,7 @@ def __benchmark__(size):
               float(pivot.values.sum()), int(rank.max()), float(monthly.iloc[-1]))
     _check(size, result)
     return result
+
+
+def __benchmark__(size=600000):
+    return measure(size)

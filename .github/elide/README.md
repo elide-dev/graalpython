@@ -2,7 +2,8 @@
 
 This repository is a fork of [oracle/graalpython](https://github.com/oracle/graalpython). Everything
 the fork adds to CI is in this folder and in workflow files named `elide-*.yml`. GitHub only reads
-workflows from `.github/workflows`, so the workflow files cannot live here.
+workflows from `.github/workflows`, so the workflow files cannot live here. The package benchmarks
+live with GraalPy's other benchmarks, in a folder of their own (see "Package benchmarks").
 
 The fork does not edit upstream's files, so merging from upstream cannot conflict with its CI. The
 one exception is listed at the end.
@@ -55,7 +56,9 @@ the measurement runs there.
 ### Package benchmarks
 
 The suite `packages` of `codspeed-bench` measures pydantic, orjson, pandas, numpy and lxml. Its
-files are in `benchmarks/packages`, not in upstream's benchmark folders:
+files are next to upstream's benchmarks, in the fork's own folder
+`graalpython/com.oracle.graal.python.benchmarks/python/packages`, which upstream does not have, so
+merges from upstream cannot conflict with it:
 
 | Benchmark | What one iteration does |
 |---|---|
@@ -70,30 +73,38 @@ files are in `benchmarks/packages`, not in upstream's benchmark folders:
 | `numpy-vectorized` | ufuncs, reductions, sort, percentile, an FFT and a small linear solve on large arrays |
 | `lxml-xpath` | parse, XPath queries, edits and serialization of an XML document, and `lxml.html` parsing of a table |
 
-Each file is in the format of upstream's `harness.py`: `__setup__(size)` builds the input from a
-fixed seed and is not measured, `__benchmark__(size)` is one measured iteration. Every iteration
-compares its result with `EXPECTED[size]` in the file and fails the benchmark when it differs;
-floats are compared with a relative tolerance, because they differ in the last digits between
-platforms. `benchmarks.txt` lists the benchmarks with their harness arguments (iterations and size).
-The size is part of the name on CodSpeed. The files are Python without the `.py` extension, like the
-scripts in this folder (see below); the harness loads a benchmark by its path.
+Each file is in the format of upstream's `harness.py`, like the files in `meso` and `micro`:
+`__setup__(size)` builds the input from a fixed seed and is not measured, `__benchmark__(size)` is
+one measured iteration and calls `measure(size)`. Every iteration compares its result with
+`EXPECTED[size]` in the file and fails the benchmark when it differs; floats are compared with a
+relative tolerance, because they differ in the last digits between platforms. Unlike upstream's
+`macro` benchmarks, the files do not call `ensure_packages`: the packages are installed before the
+run, because the benchmark host has no network access to PyPI.
+
+The fork does not edit upstream's benchmark table, `mx.graalpython/mx_graalpython_bench_param.py`,
+so the folder has its own, `benchmarks.txt`: the benchmarks with their harness arguments (iterations
+and size). The size is part of the name on CodSpeed, for example
+`graalpython/com.oracle.graal.python.benchmarks/python/packages/pandas-csv.py::packages/pandas-csv[200000]`.
+
+The files are written for the fork and carry no copyright header. Upstream's style job, which this
+CI does not run (see below), would flag them for the missing Oracle header.
 
 To add a benchmark:
 
-1. Write the file in `benchmarks/packages` and add a line to `benchmarks.txt`. Size it so that an
+1. Write `<name>.py` in the `packages` folder and add a line to its `benchmarks.txt`. Size it so that an
    iteration takes about 0.2 to 3 s on GraalPy, and give it enough iterations that the second half,
    which is what is reported, is warmed up (30 for the current ones).
 2. Run it with CPython, for example
-   `python3 graalpython/com.oracle.graal.python.benchmarks/python/harness.py .github/elide/benchmarks/packages/<name> -i 4 <size>`
-   in a virtual environment with `benchmarks/packages/requirements.txt` installed. For a size
+   `python graalpython/com.oracle.graal.python.benchmarks/python/harness.py graalpython/com.oracle.graal.python.benchmarks/python/packages/<name>.py -i 4 <size>`
+   with the `python` of a virtual environment that has the folder's `requirements.txt` installed. For a size
    without an entry in `EXPECTED`, the first iteration prints its result and the others are compared
    with it; copy it into `EXPECTED`.
 3. `python3 .github/elide/codspeed-bench --python <that environment's python> --suite packages --bench <name>`
    runs it as the workflow does.
-4. A new package goes into `benchmarks/packages/requirements.txt` with all its dependencies pinned.
+4. A new package goes into the folder's `requirements.txt` with all its dependencies pinned.
    A package with compiled code also needs a build line in the `wheels` job of `elide-codspeed.yml`.
 
-The versions are pinned in `benchmarks/packages/requirements.txt`. The compiled packages are built
+The versions are pinned in the folder's `requirements.txt`. The compiled packages are built
 from source with GraalPy's pip, which applies GraalPy's patch for the version from
 `graalpython/lib-graalpython/patches/metadata.toml`; a new version needs a patch there or none at
 all. A version change changes the measurement, so make it in a pull request of its own.
@@ -128,7 +139,7 @@ forks. Such a pull request gets no tests until its branch is pushed to this repo
 Upstream's style job, which this CI does not run but upstream does, requires an Oracle copyright
 header in every `.py`, `.sh`, `.java`, `.c` and `.h` file of the repository. The exceptions are listed in an upstream file, which the fork does not
 edit. The scripts in this folder are therefore Python files without the `.py` extension; run them
-with `python3 <file>`. The same holds for the benchmark files in `benchmarks`.
+with `python3 <file>`.
 
 ## Upstream workflows that are switched off
 
