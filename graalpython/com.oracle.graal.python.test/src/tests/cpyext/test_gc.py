@@ -42,6 +42,7 @@ import os
 import sys
 import time
 import unittest
+import weakref
 from unittest import skipIf
 
 from . import CPyExtType
@@ -1138,3 +1139,85 @@ class TestGCNativeReachability(unittest.TestCase):
             GCGraphNode.release()
             a.set(None, None)
             b.set(None, None)
+
+
+NativeBaseForManagedSubclass = CPyExtType(
+    "NativeBaseForManagedSubclass",
+    '''
+    static int nbms_traverse(NativeBaseForManagedSubclassObject *self, visitproc visit, void *arg) {
+        Py_VISIT(self->payload);
+        return 0;
+    }
+
+    static int nbms_clear(NativeBaseForManagedSubclassObject *self) {
+        Py_CLEAR(self->payload);
+        return 0;
+    }
+
+    /* Same shape as the tp_dealloc that Cython generates for a cdef class. */
+    static void nbms_dealloc(NativeBaseForManagedSubclassObject *self) {
+        PyObject_GC_UnTrack(self);
+        Py_CLEAR(self->payload);
+        Py_TYPE(self)->tp_free((PyObject *)self);
+    }
+    ''',
+    cmembers="PyObject *payload;",
+    tp_flags='Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_GC',
+    tp_traverse='(traverseproc)nbms_traverse',
+    tp_clear='(inquiry)nbms_clear',
+    tp_dealloc='(destructor)nbms_dealloc',
+    tp_members='{"payload", T_OBJECT, offsetof(NativeBaseForManagedSubclassObject, payload), 0, ""}',
+)
+
+
+class TestManagedSubclassOfNativeType(unittest.TestCase):
+    """Instances of a Python subclass of a native type are native objects that keep their
+    ``__dict__`` in the pre-header. The dict must be released when the instance dies."""
+
+    class Canary:
+        pass
+
+    @staticmethod
+    def collect():
+        for _ in range(4):
+            gc.collect()
+            time.sleep(0.05)
+
+    def check_released(self, populate):
+        class ManagedSubclass(NativeBaseForManagedSubclass):
+            pass
+
+        canaries = []
+        for _ in range(16):
+            obj = ManagedSubclass()
+            canary = self.Canary()
+            populate(obj, canary)
+            canaries.append(weakref.ref(canary))
+            del obj, canary
+        self.collect()
+        if RELY_ON_GC:
+            alive = sum(ref() is not None for ref in canaries)
+            assert alive == 0, f"{alive} of {len(canaries)} objects leaked"
+
+    def test_native_field_released(self):
+        def populate(obj, canary):
+            obj.payload = canary
+        self.check_released(populate)
+
+    def test_instance_dict_released(self):
+        def populate(obj, canary):
+            obj.attr = canary
+        self.check_released(populate)
+
+    def test_instance_dict_with_native_object_released(self):
+        def populate(obj, canary):
+            # managed dict -> native object -> managed object
+            obj.attr = NativeBaseForManagedSubclass()
+            obj.attr.payload = canary
+        self.check_released(populate)
+
+    def test_replaced_instance_dict_released(self):
+        def populate(obj, canary):
+            obj.attr = 1
+            obj.__dict__ = {"other": canary}
+        self.check_released(populate)
