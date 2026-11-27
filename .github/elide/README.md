@@ -95,3 +95,4 @@ upstream's files:
 | Tag file | Test | Reason |
 | --- | --- | --- |
 | `test_asyncio.txt` | `test.test_asyncio.test_events.PollEventLoopTests.test_subprocess_close_after_finish` | hangs until the 600 s timeout, on GitHub's runners and on Elide's |
+| `test_datetime.txt` | `test.datetimetester.ZoneInfoTest[America/<zone>]_Fast.test_system_transitions` and `..._Pure...` for the 16 zones in Brazil (32 entries) | the runner's time-zone files and GraalPy's time-zone data disagree by one hour on 31 March 1965; fails on most of Elide's runners, cause not found yet |
