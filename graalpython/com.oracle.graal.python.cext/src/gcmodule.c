@@ -2916,8 +2916,10 @@ PyObject_GC_Del(void *op)
      * stays strong and the dict, as well as everything reachable from it, is
      * never collected.
      *
-     * This is just a DECREF of a managed object, i.e., at most an upcall that
-     * makes the handle table reference weak; it does not run arbitrary code.
+     * For the usual managed dict this is at most an upcall that makes the
+     * handle table reference weak, but '__dict__' may also be a dict subclass
+     * with native backing, whose final DECREF runs its tp_dealloc; that is why
+     * the pointer is cleared before the DECREF.
      */
     if (_PyType_HasFeature(tp, Py_TPFLAGS_MANAGED_DICT)) {
         PyManagedDictPointer *managed_dict = _PyObject_ManagedDictPointer((PyObject *)op);

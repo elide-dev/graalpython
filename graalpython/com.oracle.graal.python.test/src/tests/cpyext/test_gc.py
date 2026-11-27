@@ -42,7 +42,6 @@ import os
 import sys
 import time
 import unittest
-import weakref
 from unittest import skipIf
 
 from . import CPyExtType
@@ -1144,80 +1143,72 @@ class TestGCNativeReachability(unittest.TestCase):
 NativeBaseForManagedSubclass = CPyExtType(
     "NativeBaseForManagedSubclass",
     '''
-    static int nbms_traverse(NativeBaseForManagedSubclassObject *self, visitproc visit, void *arg) {
-        Py_VISIT(self->payload);
+    static Py_ssize_t nbms_deallocs = 0;
+
+    static int nbms_traverse(PyObject *self, visitproc visit, void *arg) {
         return 0;
     }
 
-    static int nbms_clear(NativeBaseForManagedSubclassObject *self) {
-        Py_CLEAR(self->payload);
-        return 0;
-    }
-
-    /* Same shape as the tp_dealloc that Cython generates for a cdef class. */
-    static void nbms_dealloc(NativeBaseForManagedSubclassObject *self) {
+    /* Same shape as the tp_dealloc that Cython generates for a cdef class: it knows nothing
+       about the __dict__ of a Python subclass. */
+    static void nbms_dealloc(PyObject *self) {
         PyObject_GC_UnTrack(self);
-        Py_CLEAR(self->payload);
-        Py_TYPE(self)->tp_free((PyObject *)self);
+        nbms_deallocs++;
+        Py_TYPE(self)->tp_free(self);
+    }
+
+    /* Allocates an instance of the given Python subclass from C, so that no reference to it
+       exists outside this function, gives it a fresh instance dict, then drops the only
+       reference to the instance, which runs tp_dealloc and tp_free right here. Returns
+       (refcount of the instance before the drop, tp_dealloc calls during the drop,
+        references the dict lost during the drop). */
+    static PyObject *nbms_drop_instance_with_dict(PyObject *unused, PyObject *subclass) {
+        if (!PyType_Check(subclass)) {
+            PyErr_SetString(PyExc_TypeError, "expected a type");
+            return NULL;
+        }
+        PyTypeObject *tp = (PyTypeObject *)subclass;
+        PyObject *dict = PyDict_New();
+        if (dict == NULL) {
+            return NULL;
+        }
+        PyObject *obj = tp->tp_alloc(tp, 0);
+        if (obj == NULL) {
+            Py_DECREF(dict);
+            return NULL;
+        }
+        if (PyObject_GenericSetDict(obj, dict, NULL) < 0) {
+            Py_DECREF(obj);
+            Py_DECREF(dict);
+            return NULL;
+        }
+        Py_ssize_t obj_refcnt = Py_REFCNT(obj);
+        Py_ssize_t dict_refcnt = Py_REFCNT(dict);
+        Py_ssize_t deallocs = nbms_deallocs;
+        Py_DECREF(obj);
+        PyObject *result = Py_BuildValue("nnn", obj_refcnt, nbms_deallocs - deallocs, dict_refcnt - Py_REFCNT(dict));
+        Py_DECREF(dict);
+        return result;
     }
     ''',
-    cmembers="PyObject *payload;",
     tp_flags='Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_GC',
     tp_traverse='(traverseproc)nbms_traverse',
-    tp_clear='(inquiry)nbms_clear',
     tp_dealloc='(destructor)nbms_dealloc',
-    tp_members='{"payload", T_OBJECT, offsetof(NativeBaseForManagedSubclassObject, payload), 0, ""}',
+    tp_methods='{"drop_instance_with_dict", (PyCFunction)nbms_drop_instance_with_dict, METH_O | METH_STATIC, ""}',
 )
 
 
 class TestManagedSubclassOfNativeType(unittest.TestCase):
-    """Instances of a Python subclass of a native type are native objects that keep their
-    ``__dict__`` in the pre-header. The dict must be released when the instance dies."""
+    """An instance of a Python subclass of a native type is a native object that keeps its
+    ``__dict__`` in the pre-header. Deallocating the instance must release the dict, even if the
+    native base's tp_dealloc does not know about it."""
 
-    class Canary:
-        pass
-
-    @staticmethod
-    def collect():
-        for _ in range(4):
-            gc.collect()
-            time.sleep(0.05)
-
-    def check_released(self, populate):
+    def test_instance_dict_released_on_dealloc(self):
         class ManagedSubclass(NativeBaseForManagedSubclass):
             pass
 
-        canaries = []
-        for _ in range(16):
-            obj = ManagedSubclass()
-            canary = self.Canary()
-            populate(obj, canary)
-            canaries.append(weakref.ref(canary))
-            del obj, canary
-        self.collect()
-        if RELY_ON_GC:
-            alive = sum(ref() is not None for ref in canaries)
-            assert alive == 0, f"{alive} of {len(canaries)} objects leaked"
-
-    def test_native_field_released(self):
-        def populate(obj, canary):
-            obj.payload = canary
-        self.check_released(populate)
-
-    def test_instance_dict_released(self):
-        def populate(obj, canary):
-            obj.attr = canary
-        self.check_released(populate)
-
-    def test_instance_dict_with_native_object_released(self):
-        def populate(obj, canary):
-            # managed dict -> native object -> managed object
-            obj.attr = NativeBaseForManagedSubclass()
-            obj.attr.payload = canary
-        self.check_released(populate)
-
-    def test_replaced_instance_dict_released(self):
-        def populate(obj, canary):
-            obj.attr = 1
-            obj.__dict__ = {"other": canary}
-        self.check_released(populate)
+        obj_refcnt, deallocs, dict_released = NativeBaseForManagedSubclass.drop_instance_with_dict(ManagedSubclass)
+        # Preconditions: the C helper held the only reference, so dropping it deallocated the instance.
+        assert obj_refcnt == 1, f"instance refcount before the drop is {obj_refcnt}, expected 1"
+        assert deallocs == 1, f"tp_dealloc ran {deallocs} times during the drop, expected 1"
+        assert dict_released == 1, f"the instance dict lost {dict_released} references on dealloc, expected 1"
