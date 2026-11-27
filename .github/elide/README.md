@@ -78,7 +78,22 @@ Each file is in the format of upstream's `harness.py`, like the files in `meso` 
 one measured iteration and calls `measure(size)`. Some benchmarks repeat the work `ROUNDS` times
 per iteration on smaller data. That was meant to make their iterations on GraalPy steadier, and it
 did not: orjson-roundtrip, pandas-csv, pandas-str, pandas-groupby-merge and lxml-xpath still vary
-by up to a factor of ten from one iteration to the next (see "Diagnosing noisy rows"). Every iteration (or round) compares its result
+by up to a factor of ten from one iteration to the next. A diagnose run (see "Diagnosing noisy rows")
+traced the variation to garbage collection pauses, which take 40 to 70% of an iteration on these
+rows, from two causes in GraalPy's memory management:
+
+- On orjson-roundtrip, pandas-csv, pandas-str and lxml-xpath the heap that survives a full
+  collection grows with every iteration (by 20 to 110 MB per iteration), although the benchmarks
+  keep nothing between iterations; it is only released after the last iteration. Collections
+  therefore take longer and longer (up to 7.6 s), and an iteration is slow when one falls into it.
+- On pandas-groupby-merge, native allocations reach GraalPy's native memory limit
+  (`--python.InitialNativeMemory`, 256 MB) more often in every iteration, and each time GraalPy
+  forces full collections, up to 65 in one iteration, until it doubles the limit. Durations follow
+  the iteration number (17 s at iteration 10, 16 s at iteration 22, about 1 s after each doubling).
+
+The rows measure GraalPy's default behaviour, so they keep this variation until it is fixed.
+
+Every iteration (or round) compares its result
 with `EXPECTED[size]` in the file and fails the benchmark when it differs; floats are compared with a
 relative tolerance, because they differ in the last digits between platforms. Unlike upstream's
 `macro` benchmarks, the files do not call `ensure_packages`: the packages are installed before the
