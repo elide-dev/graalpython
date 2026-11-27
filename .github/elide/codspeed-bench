@@ -1,0 +1,237 @@
+#!/usr/bin/env python3
+# Runs benchmarks from graalpython/com.oracle.graal.python.benchmarks with the upstream harness and
+# reports steady-state wall time to CodSpeed. Used by .github/workflows/elide-codspeed.yml; runs on CPython.
+#
+# Every benchmark runs in its own process of the interpreter under test. The harness prints one
+# duration per iteration; the first half of the iterations is warm-up and the second half are the
+# samples. One CodSpeed walltime result file is written per benchmark to
+# $CODSPEED_PROFILE_FOLDER/results. Without that variable (a local run) nothing is reported. --output
+# keeps a copy of all statistics in one file, whether or not CodSpeed takes them.
+
+#!/usr/bin/env python3
+import argparse
+import importlib.util
+import json
+import math
+import os
+import re
+import statistics
+import subprocess
+import sys
+import time
+import types
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+BENCH_REL = "graalpython/com.oracle.graal.python.benchmarks/python"
+HARNESS = os.path.join(REPO, BENCH_REL, "harness.py")
+PARAMS = os.path.join(REPO, "mx.graalpython", "mx_graalpython_bench_param.py")
+
+# suite name -> (table in mx_graalpython_bench_param.py, directory under BENCH_REL)
+SUITES = {
+    "micro-native": ("MICRO_NATIVE_BENCHMARKS", "micro"),
+    "meso": ("MESO_BENCHMARKS", "meso"),
+    "micro": ("MICRO_BENCHMARKS", "micro"),
+}
+DEFAULT_SUITES = ["micro-native", "meso"]
+
+# The second half of the iterations are the samples, so this gives at least four.
+MIN_ITERATIONS = 8
+
+# Not measured. Any other benchmark that fails makes the run fail.
+SKIP = {
+    # About 150 s per iteration on a native standalone (measured on an Apple M1 Pro).
+    "meso/chaos-traced": "minutes per iteration",
+}
+
+CREATOR = {"name": "graalpy-harness", "version": "1.0.0"}
+
+
+def load_table(name):
+    """Reads a benchmark table from the mx benchmark definitions without mx."""
+    saved = sys.modules.get("mx")
+    stub = types.ModuleType("mx")
+    stub.suite = lambda _name: types.SimpleNamespace(dir=REPO)
+    sys.modules["mx"] = stub
+    try:
+        spec = importlib.util.spec_from_file_location("_graalpy_bench_param", PARAMS)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        if saved is None:
+            del sys.modules["mx"]
+        else:
+            sys.modules["mx"] = saved
+    return getattr(module, name)
+
+
+def split_args(harness_args):
+    """-> (iterations, other harness options, workload arguments)"""
+    iterations, options, workload = 1, [], []
+    i = 0
+    while i < len(harness_args):
+        arg = harness_args[i]
+        if arg == "-i":
+            iterations = int(harness_args[i + 1])
+            i += 2
+        elif arg in ("-w", "-r", "-p"):
+            options += harness_args[i:i + 2]
+            i += 2
+        elif arg.startswith("--"):
+            options.append(arg)
+            i += 1
+        else:
+            workload.append(arg)
+            i += 1
+    return iterations, options, workload
+
+
+def benchmarks(suites, pattern):
+    for suite in suites:
+        table, directory = SUITES[suite]
+        for name, harness_args in load_table(table).items():
+            ident = "%s/%s" % (suite, name)
+            if pattern and not re.search(pattern, ident):
+                continue
+            iterations, options, workload = split_args(list(harness_args))
+            rel = "%s/%s/%s.py" % (BENCH_REL, directory, name)
+            # The identity CodSpeed keeps the history under. The workload size is part of it, the
+            # iteration count is not.
+            uri = "%s::%s%s" % (rel, ident, "[%s]" % ",".join(workload) if workload else "")
+            yield {"id": ident, "uri": uri, "file": os.path.join(REPO, rel), "iterations": iterations,
+                   "options": options, "workload": workload}
+
+
+def quantile(values, p):
+    position = p * (len(values) - 1)
+    low = int(position)
+    high = min(low + 1, len(values) - 1)
+    return values[low] + (position - low) * (values[high] - values[low])
+
+
+def walltime_stats(durations_s):
+    """CodSpeed walltime statistics. A round is one harness iteration after warm-up."""
+    warmup = len(durations_s) // 2
+    samples = sorted(d * 1e9 for d in durations_s[warmup:])
+    mean = statistics.fmean(samples)
+    stdev = statistics.stdev(samples)
+    q1, q3 = quantile(samples, .25), quantile(samples, .75)
+    iqr = q3 - q1
+    return {
+        "min_ns": samples[0], "max_ns": samples[-1], "mean_ns": mean, "stdev_ns": stdev,
+        "q1_ns": q1, "median_ns": quantile(samples, .5), "q3_ns": q3,
+        "rounds": len(samples), "total_time": sum(durations_s),
+        "iqr_outlier_rounds": sum(1 for s in samples if s < q1 - 1.5 * iqr or s > q3 + 1.5 * iqr),
+        "stdev_outlier_rounds": sum(1 for s in samples if abs(s - mean) > 2 * stdev),
+        "iter_per_round": 1, "warmup_iters": warmup,
+    }
+
+
+def run_one(python, bench, min_iterations, timeout):
+    """-> (status, durations in seconds, pid, output tail)"""
+    iterations = max(bench["iterations"], min_iterations)
+    cmd = [python, HARNESS, bench["file"], "-i", str(iterations)] + bench["options"] + bench["workload"]
+    # With CI set the harness stops early once long iterations look stable; every iteration is wanted here.
+    env = {k: v for k, v in os.environ.items() if k != "CI"}
+    # Some C API benchmarks call functions that the public headers do not declare. GCC 14 and
+    # clang 16 made that an error; it was a warning when the benchmarks were written.
+    env["CFLAGS"] = (env.get("CFLAGS", "") + " -Wno-error=implicit-function-declaration").strip()
+    proc = subprocess.Popen(cmd, cwd=os.path.dirname(bench["file"]), env=env, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, errors="replace")
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, _ = proc.communicate()
+        return "timeout after %ds" % timeout, [], proc.pid, out[-3000:]
+    if proc.returncode != 0:
+        return "exit %d" % proc.returncode, [], proc.pid, out[-3000:]
+    # Full precision; the per-iteration lines are rounded to a millisecond.
+    match = re.search(r"^### RAW DURATIONS: \[([^\]]*)\]", out, re.M)
+    durations = [float(x) for x in match.group(1).split(",")] if match and match.group(1).strip() else []
+    if len(durations) != iterations:
+        return "%d of %d iterations reported" % (len(durations), iterations), [], proc.pid, out[-3000:]
+    if any(not math.isfinite(d) or d <= 0 for d in durations):
+        return "non-positive duration", [], proc.pid, out[-3000:]
+    return "ok", durations, proc.pid, ""
+
+
+def write_result(folder, bench, stats, pid):
+    results = os.path.join(folder, "results")
+    os.makedirs(results, exist_ok=True)
+    report = {
+        "creator": dict(CREATOR, pid=pid),
+        "instrument": {"type": "walltime"},
+        "benchmarks": [{
+            "name": bench["uri"].split("::", 1)[1], "uri": bench["uri"],
+            "config": {"warmup_time_ns": None, "min_round_time_ns": None, "max_time_ns": None, "max_rounds": None},
+            "stats": stats,
+        }],
+    }
+    with open(os.path.join(results, "%d.json" % pid), "w") as f:
+        json.dump(report, f)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Report GraalPy harness benchmarks to CodSpeed (walltime).")
+    parser.add_argument("--python", required=True, help="interpreter to measure")
+    parser.add_argument("--suite", nargs="+", choices=sorted(SUITES), default=DEFAULT_SUITES)
+    parser.add_argument("--bench", help="regular expression matched against suite/name")
+    parser.add_argument("--min-iterations", type=int, default=MIN_ITERATIONS)
+    parser.add_argument("--timeout", type=int, default=900, help="seconds per benchmark process")
+    parser.add_argument("--output", help="directory for walltime-summary.json")
+    parser.add_argument("--defer-failures", action="store_true",
+                        help="exit 0 when a benchmark fails, so that the others are still reported; "
+                             "the failures are in walltime-summary.json")
+    parser.add_argument("--list", action="store_true", help="print the benchmarks and exit")
+    args = parser.parse_args()
+    if args.defer_failures and not args.output:
+        parser.error("--defer-failures needs --output")
+    if args.min_iterations < 4:
+        parser.error("--min-iterations must be at least 4: two samples are the minimum")
+
+    if os.path.exists(args.python):
+        # Each benchmark runs in its own directory.
+        args.python = os.path.abspath(args.python)
+    selected = list(benchmarks(args.suite, args.bench))
+    if not selected:
+        parser.error("no benchmark selected")
+    if args.list:
+        for bench in selected:
+            print(bench["uri"], "(skipped: %s)" % SKIP[bench["id"]] if bench["id"] in SKIP else "")
+        return 0
+
+    folder = os.environ.get("CODSPEED_PROFILE_FOLDER")
+    if not folder:
+        print("CODSPEED_PROFILE_FOLDER is not set: nothing is reported to CodSpeed", flush=True)
+    failed, measured, summary = [], 0, {}
+    print("%-48s %10s %10s %7s  %s" % ("benchmark", "median s", "stdev s", "rounds", "status"), flush=True)
+    for bench in selected:
+        if bench["id"] in SKIP:
+            print("%-48s %10s %10s %7s  skipped: %s" % (bench["id"], "-", "-", "-", SKIP[bench["id"]]), flush=True)
+            continue
+        started = time.monotonic()
+        status, durations, pid, tail = run_one(args.python, bench, args.min_iterations, args.timeout)
+        if status != "ok":
+            failed.append(bench["id"])
+            print("%-48s %10s %10s %7s  FAILED: %s" % (bench["id"], "-", "-", "-", status), flush=True)
+            print(tail, flush=True)
+            continue
+        stats = walltime_stats(durations)
+        if folder:
+            write_result(folder, bench, stats, pid)
+        summary[bench["uri"]] = stats
+        measured += 1
+        print("%-48s %10.4f %10.4f %7d  ok (%ds)" % (bench["id"], stats["median_ns"] / 1e9, stats["stdev_ns"] / 1e9,
+                                                      stats["rounds"], time.monotonic() - started), flush=True)
+    if args.output:
+        os.makedirs(args.output, exist_ok=True)
+        with open(os.path.join(args.output, "walltime-summary.json"), "w") as f:
+            json.dump({"measured": summary, "failed": failed}, f, indent=1)
+    print("%d measured, %d failed%s" % (measured, len(failed), ": " + ", ".join(failed) if failed else ""))
+    if not measured:
+        return 1
+    return 1 if failed and not args.defer_failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

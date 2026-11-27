@@ -1,0 +1,165 @@
+name: CodSpeed benchmarks
+# Steady-state wall time of the C API micro benchmarks and the pure Python meso benchmarks on a
+# native standalone, reported to CodSpeed (https://app.codspeed.io/elide-dev/graalpython).
+#
+# Wall time needs a dedicated machine, so the measurement runs on the self-hosted benchmark runner
+# linux-amd64-bench. The repository variable
+# CODSPEED_WALLTIME_RUNNER selects another label; the standalone is built for linux-amd64, so it
+# must be an x86_64 runner. The benchmark host is shared between repositories, so the standalone is
+# built on the CI pool and the host is used only for the measurement.
+#
+# Pull requests are measured only when labelled "perf:bench", and never from a fork: both the build
+# and the measurement run on self-hosted runners.
+on:
+  push:
+    branches: [develop, 'elide-*.x']
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codspeed-${{ github.ref }}
+  # Every commit on a release branch is measured; a superseded pull request run is not.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # A release build. The standalone of the unittest workflow has assertions enabled and is built in
+  # quick mode (-Ob), so it cannot be measured.
+  build:
+    name: build native standalone
+    if: >-
+      github.event_name != 'pull_request' ||
+      (contains(github.event.pull_request.labels.*.name, 'perf:bench') &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ${{ vars.CODSPEED_BUILD_RUNNER || 'linux-amd64-cipool' }}
+    timeout-minutes: 120
+    steps:
+      # The self-hosted runners keep their workspace between jobs, and mx and the graal
+      # repository are cloned next to the checkout, so start from an empty workspace.
+      - name: Clean workspace
+        run: find "${GITHUB_WORKSPACE:?}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: main
+
+      - name: Get mx and labsjdk
+        run: |
+          git config --global http.timeout 600
+          git clone https://github.com/graalvm/mx
+          ./mx/mx fetch-jdk -A --configuration main/ci/graal/common.json --jdk-id labsjdk-ce-latest
+          git -C mx checkout "$(python3 -c 'import json; print(json.load(open("main/ci/graal/common.json"))["mx_version"])')"
+          echo "$(pwd)/mx/" >> "$GITHUB_PATH"
+          echo "JAVA_HOME=$HOME/.mx/jdks/labsjdk-ce-latest" >> "$GITHUB_ENV"
+          echo "JVMCI_VERSION_CHECK=ignore" >> "$GITHUB_ENV"
+
+      - name: Build
+        working-directory: main
+        # GITHUB_CI and BUILD_WITH_ASSERTIONS stay unset: they select the quick build mode and assertions.
+        run: |
+          mx sforceimports
+          mx sversions
+          mx python-svm
+
+      # A tar keeps the executable bits and symbolic links that artifacts drop.
+      - name: Pack the standalone
+        run: tar -C main/mxbuild/linux-amd64 -cf "$RUNNER_TEMP/graalpy-native-standalone.tar" GRAALPY_NATIVE_STANDALONE
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: codspeed-graalpy-native-standalone
+          path: ${{ runner.temp }}/graalpy-native-standalone.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  # The C API benchmarks compile an extension when they start. Check that the standalone runs and
+  # that this works before the benchmark host is occupied. No timing is taken from this job.
+  check:
+    name: check standalone
+    needs: build
+    runs-on: ${{ vars.CODSPEED_BUILD_RUNNER || 'linux-amd64-cipool' }}
+    timeout-minutes: 30
+    steps:
+      - name: Clean workspace
+        run: find "${GITHUB_WORKSPACE:?}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: codspeed-graalpy-native-standalone
+          path: ${{ runner.temp }}
+
+      - name: Run three C API benchmarks
+        run: |
+          tar -C "$RUNNER_TEMP" -xf "$RUNNER_TEMP/graalpy-native-standalone.tar"
+          GRAALPY="$RUNNER_TEMP/GRAALPY_NATIVE_STANDALONE/bin/graalpy"
+          "$GRAALPY" -c 'import sys; print(sys.version)'
+          # The last two call C API functions that the public headers do not declare.
+          python3 .github/elide/codspeed-bench --python "$GRAALPY" \
+            --bench '^micro-native/(c-instantiate-large|c-to-c|c-call-method-obj-args)$'
+
+  walltime:
+    name: walltime
+    needs: [build, check]
+    runs-on: ${{ vars.CODSPEED_WALLTIME_RUNNER || 'linux-amd64-bench' }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write # CodSpeed OIDC
+    env:
+      BENCH_OUTPUT: ${{ github.workspace }}/codspeed-results
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: codspeed-graalpy-native-standalone
+          path: ${{ runner.temp }}
+
+      - name: Unpack the standalone
+        run: |
+          uname -a; cat /etc/os-release; nproc
+          tar -C "$RUNNER_TEMP" -xf "$RUNNER_TEMP/graalpy-native-standalone.tar"
+          cc --version
+          "$RUNNER_TEMP/GRAALPY_NATIVE_STANDALONE/bin/graalpy" -c 'import sys; print(sys.version)'
+
+      - name: Measure
+        # Action and runner versions already in use on this host.
+        uses: CodSpeedHQ/action@b1f28b5eccf7cb5bfe6a2a89cb3053eb67f1150c # v5.8.0
+        env:
+          # The driver reports its own results and calls no CodSpeed instrumentation hooks, so the
+          # runner's sampling profiler has no benchmark to attach its samples to.
+          CODSPEED_PROFILER_ENABLED: 'false'
+        with:
+          mode: walltime
+          runner-version: "5.2.1"
+          run: >-
+            python3 .github/elide/codspeed-bench
+            --python "${{ runner.temp }}/GRAALPY_NATIVE_STANDALONE/bin/graalpy"
+            --suite micro-native meso
+            --output "${{ env.BENCH_OUTPUT }}"
+            --defer-failures
+
+      # A failed benchmark does not stop the others from being reported, but it fails the job.
+      - name: Fail on failed benchmarks
+        run: |
+          python3 - "$BENCH_OUTPUT/walltime-summary.json" <<'EOF'
+          import json, sys
+          failed = json.load(open(sys.argv[1]))["failed"]
+          if failed:
+              sys.exit("failed benchmarks: " + ", ".join(failed))
+          EOF
+
+      # Independent of the upload to CodSpeed.
+      - name: Keep the measurements
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: codspeed-walltime-${{ github.run_attempt }}
+          path: ${{ env.BENCH_OUTPUT }}/*.json
+          retention-days: 14
+          if-no-files-found: warn
