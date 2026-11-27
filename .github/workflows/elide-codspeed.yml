@@ -243,10 +243,8 @@ jobs:
       # Four iterations each: every iteration checks its result.
       - name: Run the package benchmarks briefly
         run: |
-          "$RUNNER_TEMP/GRAALPY_NATIVE_STANDALONE/bin/graalpy" -m venv "$RUNNER_TEMP/venv"
-          "$RUNNER_TEMP/venv/bin/pip" install --no-cache-dir --no-index --find-links "$RUNNER_TEMP/wheelhouse" \
-            -r graalpython/com.oracle.graal.python.benchmarks/python/packages/requirements.txt
-          "$RUNNER_TEMP/venv/bin/python" -c 'import lxml.etree, lxml.html, numpy, orjson, pandas, pydantic'
+          .github/elide/package-venv "$RUNNER_TEMP/GRAALPY_NATIVE_STANDALONE/bin/graalpy" "$RUNNER_TEMP/venv" \
+            "$RUNNER_TEMP/wheelhouse"
           python3 .github/elide/codspeed-bench --python "$RUNNER_TEMP/venv/bin/python" --suite packages \
             --max-iterations 4
 
@@ -283,9 +281,8 @@ jobs:
       # From the wheels built on the pool only, without a network.
       - name: Install the packages
         run: |
-          "$RUNNER_TEMP/GRAALPY_NATIVE_STANDALONE/bin/graalpy" -m venv "$RUNNER_TEMP/venv"
-          "$RUNNER_TEMP/venv/bin/pip" install --no-cache-dir --no-index --find-links "$RUNNER_TEMP/wheelhouse" \
-            -r graalpython/com.oracle.graal.python.benchmarks/python/packages/requirements.txt
+          .github/elide/package-venv "$RUNNER_TEMP/GRAALPY_NATIVE_STANDALONE/bin/graalpy" "$RUNNER_TEMP/venv" \
+            "$RUNNER_TEMP/wheelhouse"
 
       - name: Measure
         # Action and runner versions already in use on this host.

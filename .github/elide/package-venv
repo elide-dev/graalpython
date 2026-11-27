@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Creates a virtual environment of a GraalPy standalone and installs the packages of the suite
+# "packages" into it from a folder of wheels, without a network. Used by
+# .github/workflows/elide-codspeed.yml.
+#
+# usage: package-venv <graalpy> <virtual environment> <folder of wheels>
+set -euo pipefail
+
+graalpy=$1 venv=$2 wheels=$3
+requirements="$(dirname "$0")/../../graalpython/com.oracle.graal.python.benchmarks/python/packages/requirements.txt"
+
+"$graalpy" -m venv --clear "$venv"
+ls -l "$venv/bin"
+# pip is run as a module, and installed when the environment came without it.
+if ! "$venv/bin/python" -m pip --version; then
+    echo "the virtual environment has no pip, installing it with ensurepip"
+    "$venv/bin/python" -m ensurepip --default-pip
+fi
+"$venv/bin/python" -m pip install --no-cache-dir --no-index --find-links "$wheels" -r "$requirements"
+"$venv/bin/python" -c 'import lxml.etree, lxml.html, numpy, orjson, pandas, pydantic'

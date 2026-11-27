@@ -118,7 +118,7 @@ libxslt linked in statically, pydantic-core and orjson with a Rust toolchain ins
 job's temporary directory. The pure Python packages come from PyPI as wheels. The job fails when a
 wheel needs a shared library other than glibc, libstdc++ and libgcc_s, because the benchmark host
 has only its base libraries and nothing can be installed there. `check` installs the wheels without
-a network and runs every package benchmark for four iterations; `walltime` installs them into a
+a network (`package-venv`) and runs every package benchmark for four iterations; `walltime` installs them into a
 virtual environment in the job's temporary directory and runs the suite with that environment's
 interpreter (`--suite-python`).
 
