@@ -75,15 +75,17 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  # The standalone was built on another machine, and the C API benchmarks compile an extension when
-  # they start. Check both on a hosted runner before the benchmark host is occupied. No timing is
-  # taken from this job.
+  # The C API benchmarks compile an extension when they start. Check that the standalone runs and
+  # that this works before the benchmark host is occupied. No timing is taken from this job.
   check:
     name: check standalone
     needs: build
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CODSPEED_BUILD_RUNNER || 'linux-amd64-cipool' }}
     timeout-minutes: 30
     steps:
+      - name: Clean workspace
+        run: find "${GITHUB_WORKSPACE:?}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0

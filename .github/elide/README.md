@@ -40,6 +40,17 @@ work on GitHub. The comments in the workflow say why.
 - The build of the native standalone that all tests run on.
 - GraalPy's own Python tests, including the C API tests, on the native standalone.
 
+## Benchmarks
+
+`elide-codspeed.yml` measures the wall time of GraalPy's C API micro benchmarks and pure Python
+meso benchmarks on a native standalone and reports it to CodSpeed
+(https://app.codspeed.io/elide-dev/graalpython). It runs on pushes to `develop` and `elide-*.x`,
+and on pull requests that carry the label `perf:bench`. `codspeed-bench` is the driver that runs
+the benchmarks and writes the results.
+
+The standalone is built on the pool. The measurement runs on the benchmark runner with the label
+`linux-amd64-bench`, which is shared between repositories, so only the measurement runs there.
+
 ## Runners
 
 All jobs run on Elide's runners, the pool with the label `linux-amd64-cipool`. Set the repository
