@@ -124,13 +124,16 @@ jobs:
           "$RUNNER_TEMP/GRAALPY_NATIVE_STANDALONE/bin/graalpy" -m venv "$RUNNER_TEMP/build-venv"
           WHEELS="$RUNNER_TEMP/wheelhouse"
           pin() { grep -E "^$1==" "$REQUIREMENTS"; }
+          # Builds every package even when one fails, so that one run shows all failures.
+          failed=""
           build() {
-            local name=$1 start=$SECONDS
+            local name=$1 start=$SECONDS status=0
             shift
             echo "::group::$name"
-            "$RUNNER_TEMP/build-venv/bin/pip" wheel --no-cache-dir --no-deps -w "$WHEELS" "$@"
+            "$RUNNER_TEMP/build-venv/bin/pip" wheel --no-cache-dir --no-deps -w "$WHEELS" "$@" || status=$?
             echo "::endgroup::"
-            echo "$name built in $((SECONDS - start)) s"
+            echo "$name: exit status $status after $((SECONDS - start)) s"
+            if [ "$status" -ne 0 ]; then failed="$failed $name"; fi
           }
           # Without an external BLAS and LAPACK (numpy's own fallback routines), so that the benchmark
           # host needs no libraries for it.
@@ -140,13 +143,22 @@ jobs:
           build pandas --no-binary pandas --find-links "$WHEELS" \
             --build-constraint "$RUNNER_TEMP/numpy-constraint.txt" "$(pin pandas)"
           # libxml2 and libxslt linked in statically, so that the benchmark host needs no libraries for
-          # lxml. The versions are the ones of lxml's own Linux wheels.
-          (
-            export STATIC_DEPS=true ZLIB_VERSION=1.3.2 LIBICONV_VERSION=1.18 LIBXML2_VERSION=2.14.6 LIBXSLT_VERSION=1.1.43
-            build lxml --no-binary lxml "$(pin lxml)"
-          )
+          # lxml. The versions are the ones of lxml's own Linux wheels. zlib.net serves only its latest
+          # release, so zlib comes from its release page; lxml checks the archive's hash.
+          export STATIC_DEPS=true ZLIB_VERSION=1.3.2 LIBICONV_VERSION=1.18 LIBXML2_VERSION=2.14.6 LIBXSLT_VERSION=1.1.43
+          export DOWNLOAD_DIR="$RUNNER_TEMP/lxml-libs"
+          mkdir -p "$DOWNLOAD_DIR"
+          curl -sSfL -o "$DOWNLOAD_DIR/zlib-$ZLIB_VERSION.tar.gz" \
+            "https://github.com/madler/zlib/releases/download/v$ZLIB_VERSION/zlib-$ZLIB_VERSION.tar.gz"
+          build lxml --no-binary lxml "$(pin lxml)"
+          unset STATIC_DEPS ZLIB_VERSION LIBICONV_VERSION LIBXML2_VERSION LIBXSLT_VERSION DOWNLOAD_DIR
           build pydantic-core --no-binary pydantic-core "$(pin pydantic-core)"
           build orjson --no-binary orjson "$(pin orjson)"
+          if [ -n "$failed" ]; then
+            ls -l "$WHEELS"
+            echo "::error::failed to build:$failed"
+            exit 1
+          fi
           # The pure Python packages. The compiled ones are taken from the wheelhouse.
           "$RUNNER_TEMP/build-venv/bin/pip" wheel --no-cache-dir --only-binary :all: -w "$WHEELS" \
             --find-links "$WHEELS" -r "$REQUIREMENTS"
