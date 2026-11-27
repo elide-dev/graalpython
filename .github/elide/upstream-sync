@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Brings upstream's changes to the fork. Used by .github/workflows/elide-upstream-sync.yml.
+#
+#   upstream-sync <upstream url> <mirror branch> <main branch>
+#
+# Run it in a clone whose remote "origin" is the fork. It
+#   1. moves the mirror branch forward to upstream's master; this fails when the mirror branch has
+#      commits that upstream does not have, which must not happen;
+#   2. when the main branch does not have all of upstream's commits yet, pushes them as the branch
+#      sync/upstream-<commit> and prints "branch=sync/upstream-<commit>" for the workflow, which
+#      opens the pull request. The pull request does not come from the mirror branch itself,
+#      because resolving a conflict in it would then add commits to the mirror.
+set -euo pipefail
+
+upstream_url=$1
+mirror=$2
+main=$3
+
+git fetch --no-tags "$upstream_url" master
+upstream=$(git rev-parse FETCH_HEAD)
+git fetch --no-tags origin "+refs/heads/$mirror:refs/remotes/origin/$mirror" "+refs/heads/$main:refs/remotes/origin/$main"
+
+if [ "$(git rev-parse "origin/$mirror")" = "$upstream" ]; then
+  echo "$mirror is at upstream's $upstream"
+elif git merge-base --is-ancestor "origin/$mirror" "$upstream"; then
+  git push origin "$upstream:refs/heads/$mirror"
+  echo "moved $mirror to upstream's $upstream"
+else
+  echo "::error::$mirror has commits that upstream does not have; it must only mirror upstream" >&2
+  exit 1
+fi
+
+if git merge-base --is-ancestor "$upstream" "origin/$main"; then
+  echo "$main has all of upstream's commits"
+  exit 0
+fi
+
+branch=sync/upstream-${upstream:0:10}
+git push origin "$upstream:refs/heads/$branch"
+echo "$(git rev-list --count "origin/$main..$upstream") upstream commits are not in $main yet, pushed as $branch"
+if [ -n "${GITHUB_OUTPUT:-}" ]; then
+  echo "branch=$branch" >> "$GITHUB_OUTPUT"
+  echo "upstream=$upstream" >> "$GITHUB_OUTPUT"
+fi

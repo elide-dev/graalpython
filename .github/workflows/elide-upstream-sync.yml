@@ -1,0 +1,59 @@
+name: Elide upstream sync
+# Brings upstream's changes to the fork: moves master, which mirrors upstream, forward and opens a
+# pull request that merges the new commits into develop. See .github/elide/README.md.
+#
+# Needs the secret ELIDE_SYNC_TOKEN: a token for this repository that may write contents, pull
+# requests and workflows. The token of the workflow run itself is not enough. It may not push
+# commits that change workflow files, which upstream's commits do, and pull requests that it opens
+# do not start Elide CI.
+on:
+  schedule:
+    - cron: '0 5 * * 1'  # Mondays 05:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: elide-upstream-sync
+
+jobs:
+  sync:
+    name: sync
+    if: github.repository == 'elide-dev/graalpython'
+    runs-on: ${{ vars.ELIDE_CI_RUNNER || 'linux-amd64-cipool' }}
+    timeout-minutes: 30
+    env:
+      UPSTREAM: https://github.com/oracle/graalpython
+      MIRROR: master
+      MAIN: develop
+    steps:
+      - name: Clean workspace
+        run: find "${GITHUB_WORKSPACE:?}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+      - name: Check the token
+        env:
+          SYNC_TOKEN: ${{ secrets.ELIDE_SYNC_TOKEN }}
+        run: |
+          if [ -z "$SYNC_TOKEN" ]; then
+            echo "::error::The secret ELIDE_SYNC_TOKEN is not set. See the comment at the top of elide-upstream-sync.yml."
+            exit 1
+          fi
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.MAIN }}
+          fetch-depth: 0
+          token: ${{ secrets.ELIDE_SYNC_TOKEN }}
+
+      - name: Move the mirror and push the new commits
+        id: sync
+        run: bash .github/elide/upstream-sync "$UPSTREAM" "$MIRROR" "$MAIN"
+
+      - name: Open the pull request
+        if: steps.sync.outputs.branch
+        env:
+          GH_TOKEN: ${{ secrets.ELIDE_SYNC_TOKEN }}
+          BRANCH: ${{ steps.sync.outputs.branch }}
+          COMMIT: ${{ steps.sync.outputs.upstream }}
+        run: bash .github/elide/upstream-sync-pr "$BRANCH" "$COMMIT" "$UPSTREAM" "$MAIN"
