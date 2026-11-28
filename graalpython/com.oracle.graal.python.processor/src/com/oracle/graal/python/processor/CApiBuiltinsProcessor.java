@@ -1089,9 +1089,15 @@ public class CApiBuiltinsProcessor extends AbstractProcessor {
             lines.add("    public static " + capiTypeToJavaPrimitiveType(builtin.returnType) + " upcall_" + builtin.name + "(" + argString + ") {");
             String paramString = IntStream.range(0, builtin.arguments.length).mapToObj(i -> argName(i)).collect(Collectors.joining(", "));
             boolean isVoidReturn = isVoid(builtin.returnType);
+            // Every upcall bumps the "Java ran" epoch on exit (see CApiEpoch)
+            String epochBump = "com.oracle.graal.python.builtins.objects.cext.capi.CApiEpoch.javaRan();";
             if (builtin.origin instanceof TypeElement) {
                 String retString = isVoidReturn ? "" : "return (" + capiTypeToJavaPrimitiveType(builtin.returnType) + ")";
-                lines.add("        " + retString + builtin.name + ".getCallTarget().call(" + paramString + ");");
+                lines.add("        try {");
+                lines.add("            " + retString + builtin.name + ".getCallTarget().call(" + paramString + ");");
+                lines.add("        } finally {");
+                lines.add("            " + epochBump);
+                lines.add("        }");
             } else {
                 String retString = isVoidReturn ? "" : "return ";
                 assert builtin.canRaise;
@@ -1107,6 +1113,8 @@ public class CApiBuiltinsProcessor extends AbstractProcessor {
                 if (!isVoidReturn) {
                     lines.add("            return " + capiTypeToErrorValue(builtin.returnType) + ";");
                 }
+                lines.add("        } finally {");
+                lines.add("            " + epochBump);
                 lines.add("        }");
             }
             lines.add("    }");
@@ -1498,6 +1506,7 @@ public class CApiBuiltinsProcessor extends AbstractProcessor {
                 lines.add("    public static " + returnType + " invoke" + sig.name + "(" + String.join(", ", invokeArgs) + ") {");
                 String returnStmt = isVoidReturn ? "" : "return ";
                 lines.add("        CApiTiming.enter();");
+                lines.add("        com.oracle.graal.python.builtins.objects.cext.capi.CApiEpoch.javaRan();");
                 lines.add("        try {");
                 lines.add("            " + returnStmt + "invoke" + sig.name + "(" +
                                 "nativeFunction.getAddress()" +
@@ -1537,6 +1546,7 @@ public class CApiBuiltinsProcessor extends AbstractProcessor {
                 lines.add("");
                 lines.add("        Object state = BoundaryCallContext.enter(frame, threadState, boundaryCallData);");
                 lines.add("        CApiTiming.enter();");
+                lines.add("        com.oracle.graal.python.builtins.objects.cext.capi.CApiEpoch.javaRan();");
                 lines.add("        try {");
                 lines.add("            " + returnStmt + "invoke" + sig.name + "(" +
                                 "nativeFunction.getAddress()" +

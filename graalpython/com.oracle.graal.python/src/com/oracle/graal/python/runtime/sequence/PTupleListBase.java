@@ -40,6 +40,8 @@
  */
 package com.oracle.graal.python.runtime.sequence;
 
+import com.oracle.graal.python.builtins.objects.list.ListStubMirror;
+import com.oracle.graal.python.builtins.objects.list.PList;
 import com.oracle.graal.python.runtime.sequence.storage.MroSequenceStorage;
 import com.oracle.graal.python.runtime.sequence.storage.SequenceStorage;
 import com.oracle.truffle.api.object.Shape;
@@ -56,10 +58,28 @@ public abstract class PTupleListBase extends PSequence {
         return store;
     }
 
+    /**
+     * Storage replacement without the list stub sync, for a list that has no native
+     * stub (see {@code ListNodes.PListAppendNode}). Same body as setSequenceStorage without the sync.
+     */
+    public final void setSequenceStorageNoStub(SequenceStorage store) {
+        assert !(this.store instanceof MroSequenceStorage) : "attempting to replace MroSequenceStorage";
+        this.store = store;
+    }
+
     @Override
     public final void setSequenceStorage(SequenceStorage store) {
         assert !(this.store instanceof MroSequenceStorage) : "attempting to replace MroSequenceStorage";
         this.store = store;
+        /*
+         * A list with a native stub re-syncs the stub's ob_size/ob_item mirror (out
+         * of line). A storage that was replaced never writes the stub again (it checks that it is
+         * still its list's storage). Compiled list append avoids this method for lists without a
+         * stub (see ListNodes.PListAppendNode).
+         */
+        if (getNativePointer() != UNINITIALIZED && this instanceof PList list) {
+            ListStubMirror.syncOutOfLine(list);
+        }
     }
 
 }

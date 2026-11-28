@@ -56,6 +56,17 @@ public final class PBigRangeIterator extends PBuiltinIterator {
 
     private BigInteger longIndex;
 
+    /*
+     * When every value of the range fits a Java long (e.g. range(2**32, 2**32 + n)), the
+     * iterator yields Java longs, like any other int in that range, instead of a BigInteger and a
+     * PInt per element. In that mode the index is fastIndex and longIndex is unused.
+     */
+    private final boolean longMode;
+    private final long fastStart;
+    private final long fastStep;
+    private final long fastLen;
+    private long fastIndex;
+
     public PBigRangeIterator(Object clazz, Shape instanceShape, PInt start, PInt stop, PInt step, PInt len) {
         super(clazz, instanceShape);
         this.start = start;
@@ -64,15 +75,55 @@ public final class PBigRangeIterator extends PBuiltinIterator {
         this.len = len;
 
         this.longIndex = BigInteger.ZERO;
+        long[] fast = fitsLong(start.getValue(), step.getValue(), len.getValue());
+        this.longMode = fast != null;
+        this.fastStart = fast != null ? fast[0] : 0;
+        this.fastStep = fast != null ? fast[1] : 0;
+        this.fastLen = fast != null ? fast[2] : 0;
+    }
+
+    @TruffleBoundary
+    private static long[] fitsLong(BigInteger start, BigInteger step, BigInteger len) {
+        if (start.bitLength() > 63 || step.bitLength() > 63 || len.bitLength() > 63) {
+            return null;
+        }
+        if (len.signum() > 0) {
+            BigInteger last = start.add(len.subtract(BigInteger.ONE).multiply(step));
+            if (last.bitLength() > 63) {
+                return null;
+            }
+        }
+        return new long[]{start.longValue(), step.longValue(), len.longValue()};
+    }
+
+    public boolean isLongMode() {
+        return longMode;
+    }
+
+    public boolean hasNextLong() {
+        return fastIndex < fastLen;
+    }
+
+    public long nextLong() {
+        long v = fastStart + fastIndex * fastStep;
+        fastIndex++;
+        return v;
+    }
+
+    private BigInteger currentIndex() {
+        return longMode ? BigInteger.valueOf(fastIndex) : longIndex;
     }
 
     @TruffleBoundary
     public BigInteger getRemainingLength() {
-        return this.len.subtract(this.longIndex);
+        return this.len.subtract(currentIndex());
     }
 
     @TruffleBoundary
     public BigInteger nextBigInt() {
+        if (longMode) {
+            return BigInteger.valueOf(nextLong());
+        }
         BigInteger nextVal = start.add(longIndex.multiply(step.getValue()));
         this.longIndex = longIndex.add(BigInteger.ONE);
         return nextVal;
@@ -80,6 +131,9 @@ public final class PBigRangeIterator extends PBuiltinIterator {
 
     @TruffleBoundary
     public boolean hasNextBigInt() {
+        if (longMode) {
+            return hasNextLong();
+        }
         return longIndex.compareTo(len.getValue()) < 0;
     }
 
@@ -99,11 +153,18 @@ public final class PBigRangeIterator extends PBuiltinIterator {
         return len;
     }
 
+    @TruffleBoundary
     public PInt getLongIndex(PythonLanguage language) {
-        return PFactory.createInt(language, longIndex);
+        return PFactory.createInt(language, currentIndex());
     }
 
+    @TruffleBoundary
     public void setLongIndex(BigInteger idx) {
-        this.longIndex = idx;
+        if (longMode) {
+            // __setstate__ clamps idx below at 0; above len the iterator is exhausted either way
+            this.fastIndex = idx.compareTo(len.getValue()) > 0 ? fastLen : idx.longValue();
+        } else {
+            this.longIndex = idx;
+        }
     }
 }

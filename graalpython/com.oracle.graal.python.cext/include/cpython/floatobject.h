@@ -21,7 +21,10 @@ PyAPI_FUNC(double) GraalPyFloat_AS_DOUBLE(PyObject* op);
 // Static inline version of PyFloat_AsDouble() trading safety for speed.
 // It doesn't check if op is a double object.
 static inline double PyFloat_AS_DOUBLE(PyObject *op) {
-    // GraalPy change
+    // GraalPy change: a native float struct (no handle tag, bit 63) is read directly
+    if (!((uint64_t)(uintptr_t)op & ((uint64_t)1 << 63))) {
+        return ((PyFloatObject *) op)->ob_fval;
+    }
     return GraalPyFloat_AS_DOUBLE(op);
 }
 #define PyFloat_AS_DOUBLE(op) PyFloat_AS_DOUBLE(_PyObject_CAST(op))

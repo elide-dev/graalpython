@@ -72,6 +72,7 @@ import com.oracle.graal.python.runtime.sequence.storage.ArrayBasedSequenceStorag
 import com.oracle.graal.python.runtime.sequence.storage.EmptySequenceStorage;
 import com.oracle.graal.python.runtime.sequence.storage.ForeignSequenceStorage;
 import com.oracle.graal.python.runtime.sequence.storage.NativeObjectSequenceStorage;
+import com.oracle.graal.python.builtins.objects.PythonAbstractObject;
 import com.oracle.graal.python.runtime.sequence.storage.NativeSequenceStorage;
 import com.oracle.graal.python.runtime.sequence.storage.SequenceStorage;
 import com.oracle.truffle.api.CompilerDirectives;
@@ -339,7 +340,8 @@ public abstract class ListNodes {
         public static void doPList(PList list, Object value,
                         @Bind Node inliningTarget,
                         @Cached SequenceStorageNodes.AppendNode appendNode,
-                        @Cached(value = "getUpdateStoreProfile()", uncached = "getUpdateStoreProfileUncached()", dimensions = 1) BranchProfile[] updateStoreProfile) {
+                        @Cached(value = "getUpdateStoreProfile()", uncached = "getUpdateStoreProfileUncached()", dimensions = 1) BranchProfile[] updateStoreProfile,
+                        @Cached InlinedConditionProfile mirroredProfile) {
             if (updateStoreProfile[0] == null) {
                 // Executed for the first time. We don't pollute the AppendNode specializations,
                 // yet, in case we're transitioning exactly once, because we'll pontentially pass
@@ -351,11 +353,32 @@ public abstract class ListNodes {
                 if (list.getOrigin() != null && newStore instanceof ArrayBasedSequenceStorage newArrayBasedStore) {
                     list.getOrigin().reportUpdatedCapacity(newArrayBasedStore);
                 }
-            } else {
+            } else if (mirroredProfile.profile(inliningTarget, list.getNativePointer() != PythonAbstractObject.UNINITIALIZED || list.getSequenceStorage() instanceof NativeSequenceStorage)) {
+                /*
+                 * A list that has a native stub (or native storage, which can give it
+                 * a stub during the append) replaces its storage through setSequenceStorage, which re-syncs the stub.
+                 */
                 SequenceStorage newStore = appendNode.execute(inliningTarget, list.getSequenceStorage(), value, ListGeneralizationNode.SUPPLIER);
                 if (list.getSequenceStorage() != newStore) {
                     updateStoreProfile[0].enter();
                     list.setSequenceStorage(newStore);
+                }
+                if (CompilerDirectives.inInterpreter() && list.getOrigin() != null && newStore instanceof ArrayBasedSequenceStorage newArrayBasedStore) {
+                    list.getOrigin().reportUpdatedCapacity(newArrayBasedStore);
+                }
+            } else {
+                /*
+                 * No stub: the plain append without the stub sync. With the stub sync in
+                 * this branch, partial evaluation no longer resolved the "storage changed" test per
+                 * incoming path (Empty -> typed transition vs. plain append), the loop got an extra
+                 * back edge and the storage could not stay virtual (append of ints got much slower). The
+                 * profile above makes the stub case a deoptimization in compiled code until this
+                 * site meets such a list. Nothing in a Java-storage append gives the list a stub.
+                 */
+                SequenceStorage newStore = appendNode.execute(inliningTarget, list.getSequenceStorage(), value, ListGeneralizationNode.SUPPLIER);
+                if (list.getSequenceStorage() != newStore) {
+                    updateStoreProfile[0].enter();
+                    list.setSequenceStorageNoStub(newStore);
                 }
                 if (CompilerDirectives.inInterpreter() && list.getOrigin() != null && newStore instanceof ArrayBasedSequenceStorage newArrayBasedStore) {
                     list.getOrigin().reportUpdatedCapacity(newArrayBasedStore);

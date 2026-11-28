@@ -113,6 +113,8 @@ import com.oracle.graal.python.builtins.objects.ints.PInt;
 import com.oracle.graal.python.builtins.objects.object.PythonObject;
 import com.oracle.graal.python.builtins.objects.str.PString;
 import com.oracle.graal.python.builtins.objects.str.StringNodes.StringMaterializeNode;
+import com.oracle.graal.python.builtins.objects.list.ListStubMirror;
+import com.oracle.graal.python.builtins.objects.list.PList;
 import com.oracle.graal.python.builtins.objects.tuple.PTuple;
 import com.oracle.graal.python.builtins.objects.type.PythonAbstractClass;
 import com.oracle.graal.python.builtins.objects.type.PythonBuiltinClass;
@@ -1481,7 +1483,7 @@ public abstract class CApiTransitions {
             Object type = getClassNode.execute(inliningTarget, pythonObject);
 
             CStructs ctype;
-            if (isVarObjectProfile.profile(inliningTarget, pythonObject instanceof PTuple)) {
+            if (isVarObjectProfile.profile(inliningTarget, pythonObject instanceof PTuple || pythonObject instanceof PList)) {
                 ctype = CStructs.GraalPyVarObject;
             } else if (isFloatObjectProfile.profile(inliningTarget, pythonObject instanceof PFloat)) {
                 ctype = CStructs.GraalPyFloatObject;
@@ -1498,7 +1500,10 @@ public abstract class CApiTransitions {
             long taggedPointer = allocateNativeObjectStubNode.execute(inliningTarget, pythonObject, type, ctype, initialRefCount, gc, 0);
 
             // allocate a native stub object (C type: GraalPy*Object)
-            if (ctype == CStructs.GraalPyVarObject) {
+            if (ctype == CStructs.GraalPyVarObject && pythonObject instanceof PList list) {
+                // List stubs carry ob_size/ob_item, valid for empty or native storage
+                ListStubMirror.sync(list, HandlePointerConverter.pointerToStub(taggedPointer));
+            } else if (ctype == CStructs.GraalPyVarObject) {
                 assert pythonObject instanceof PTuple;
                 SequenceStorage sequenceStorage = ((PTuple) pythonObject).getSequenceStorage();
                 long realPointer = HandlePointerConverter.pointerToStub(taggedPointer);
@@ -1559,9 +1564,16 @@ public abstract class CApiTransitions {
              * Python's GC, we will also allocate space for 'PyGC_Head'.
              */
             long presize = gc ? CStructs.PyGC_Head.size() : 0;
-            long allocationSize = ctype.size() + presize + extraSize;
+            /*
+             * Every stub has at least the GraalPyVarObject fields, zeroed, so that C
+             * reading a stub's ob_size (PyList_Type's sq_length, like CPython's list_length, does not
+             * test the type) stays in bounds and reads 0 for non-var objects. Same malloc size class
+             * as the 24-byte GraalPyObject (16-byte quantum), so no extra memory.
+             */
+            long structSize = Math.max(ctype.size(), CStructs.GraalPyVarObject.size());
+            long allocationSize = structSize + presize + extraSize;
             long stubPointer = NativeMemory.malloc(allocationSize);
-            NativeMemory.memset(stubPointer, (byte) 0, ctype.size() + presize);
+            NativeMemory.memset(stubPointer, (byte) 0, structSize + presize);
 
             HandleContext handleContext = pythonContext.handleContext;
             long taggedPointer = HandlePointerConverter.stubToPointer(stubPointer);

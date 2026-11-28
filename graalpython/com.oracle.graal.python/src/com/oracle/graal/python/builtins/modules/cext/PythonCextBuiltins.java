@@ -1058,6 +1058,15 @@ public final class PythonCextBuiltins {
     @CApiBuiltin(ret = Void, args = {SIZE_T}, call = Ignored, retConversion = void.class, argConversions = {long.class})
     @TruffleBoundary
     static void GraalPyPrivate_TriggerGC(long delay) {
+        if (delay < 0) {
+            /*
+             * No collection; wait briefly for the reference handler to enqueue the
+             * references cleared by the previous collection and release their native objects now.
+             */
+            java.util.concurrent.locks.LockSupport.parkNanos(100_000L);
+            CApiTransitions.drainReferenceQueueNow(PythonContext.get(null));
+            return;
+        }
         LOGGER.fine("full GC due to native memory");
         PythonUtils.forceFullGC();
         try {

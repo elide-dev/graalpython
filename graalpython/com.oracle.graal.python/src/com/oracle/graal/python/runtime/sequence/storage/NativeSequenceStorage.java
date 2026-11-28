@@ -48,6 +48,8 @@ import java.util.logging.Level;
 import com.oracle.graal.python.PythonLanguage;
 import com.oracle.graal.python.builtins.objects.cext.capi.CApiContext;
 import com.oracle.graal.python.builtins.objects.cext.capi.transitions.CApiTransitions.NativeStorageReference;
+import com.oracle.graal.python.builtins.objects.list.ListStubMirror;
+import com.oracle.graal.python.builtins.objects.object.PythonObject;
 import com.oracle.graal.python.util.PythonUtils;
 import com.oracle.truffle.api.TruffleLogger;
 
@@ -59,6 +61,11 @@ public abstract class NativeSequenceStorage extends SequenceStorage {
     /* native pointer object */
     private long ptr;
     private NativeStorageReference reference;
+    /**
+     * The list whose native stub mirrors this storage's length and pointer (see
+     * {@link ListStubMirror}); {@code null} if none. Only set on {@link NativeObjectSequenceStorage}.
+     */
+    private PythonObject mirrorOwner;
 
     /**
      * State for the two independent lifetime obligations of a native sequence storage:
@@ -125,7 +132,15 @@ public abstract class NativeSequenceStorage extends SequenceStorage {
             reference.setPtr(ptr);
         }
         this.ptr = ptr;
+        if (mirrorOwner != null) {
+            ListStubMirror.writeItems(mirrorOwner, this, ptr);
+        }
     }
+
+    public final void attachMirror(PythonObject owner) {
+        mirrorOwner = owner;
+    }
+
 
     public void setCapacity(int capacity) {
         this.capacity = capacity;
@@ -146,6 +161,9 @@ public abstract class NativeSequenceStorage extends SequenceStorage {
         this.length = length;
         if (reference != null) {
             reference.setSize(length);
+        }
+        if (mirrorOwner != null) {
+            ListStubMirror.writeSize(mirrorOwner, this, length);
         }
     }
 

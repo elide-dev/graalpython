@@ -41,14 +41,18 @@
 package com.oracle.graal.python.builtins.modules.cext;
 
 import static com.oracle.graal.python.annotations.ArgDescriptor.UNSIGNED_LONG;
-import static com.oracle.graal.python.builtins.modules.cext.PythonCextBuiltins.CApiCallPath.Direct;
+import static com.oracle.graal.python.builtins.modules.cext.PythonCextBuiltins.CApiCallPath.Ignored;
 
 import com.oracle.graal.python.builtins.modules.cext.PythonCextBuiltins.CApiBuiltin;
 
 public final class PythonCextPyThreadBuiltins {
 
-    @CApiBuiltin(ret = UNSIGNED_LONG, args = {}, call = Direct, acquireGil = false, canRaise = false, retConversion = long.class, argConversions = {})
-    public static long PyThread_get_thread_ident() {
+    /**
+     * Java side of {@code PyThread_get_thread_ident} (thread.c), which caches the value in the
+     * current thread's native PyThreadState. Must equal {@code _thread.get_ident()}.
+     */
+    @CApiBuiltin(ret = UNSIGNED_LONG, args = {}, call = Ignored, acquireGil = false, canRaise = false, retConversion = long.class, argConversions = {})
+    public static long GraalPyPrivate_Thread_GetIdent() {
         return Thread.currentThread().threadId();
     }
 }

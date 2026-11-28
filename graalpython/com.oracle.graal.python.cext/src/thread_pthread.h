@@ -381,7 +381,7 @@ PyThread_get_thread_ident_ex(void) {
     return _pthread_t_to_ident(threadid);
 }
 
-#if 0 // GraalPy change: implemented in Java to match _thread.get_ident()
+#if 0 // GraalPy change: implemented in thread.c to match _thread.get_ident()
 unsigned long
 PyThread_get_thread_ident(void)
 {

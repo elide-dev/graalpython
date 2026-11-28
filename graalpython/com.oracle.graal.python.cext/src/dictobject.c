@@ -2862,10 +2862,210 @@ _PyDict_Next(PyObject *op, Py_ssize_t *ppos, PyObject **pkey,
  * the values associated with the keys (but doesn't insert new keys or
  * delete keys), via PyDict_SetItem().
  */
+/*
+ * PyDict_Next without an upcall per step.
+ *
+ * A dict's storage lives in Java. After two consecutive PyDict_Next calls on the same dict (the first at
+ * position 0) with no Java code having run in between, C asks Java once for a mirror of the entry table:
+ * (key, value) borrowed pointers indexed by the storage's iteration position (holes are NULL), the same
+ * position space as _PyDict_Next. Further steps read the mirror while it is valid. Validity: the mirror
+ * is stamped with the "Java ran" epoch (CApiEpoch.java), which Java bumps on entry of every
+ * downcall and on exit of every upcall; a dict can only change while Java runs, so an unchanged epoch
+ * means an unchanged dict. When the epoch has moved, the step goes to _PyDict_Next (as before), and a
+ * new mirror is built only at the start of the next pass. Entries are promoted by Java (strings,
+ * large ints, non-float32 floats get objects owned by the dict) before a mirror is built, so the
+ * borrowed pointers live as long as the dict holds the entries. Mirrors live in a small direct-mapped
+ * cache keyed by the dict pointer (not in the dict), single-threaded under the GIL.
+ */
+typedef struct {
+    PyObject *key;
+    PyObject *value;
+} GraalPyDictMirrorEntry;
+
+typedef struct {
+    PyObject *op;                       /* the dict (NULL: slot empty) */
+    uint64_t epoch;                     /* valid iff equal to *graalpy_dict_epoch */
+    Py_ssize_t n;                       /* index slots */
+    GraalPyDictMirrorEntry *entries;
+} GraalPyDictMirror;                    /* 32 bytes; capacity in graalpy_dict_mirror_cap */
+
+#define GRAALPY_DICT_MIRRORS 8          /* power of two */
+#define GRAALPY_DICT_MIRROR_MAX (1 << 20) /* larger dicts keep the upcall path (16 MB of mirror) */
+
+static uint64_t graalpy_dict_epoch_dummy = 1;
+static uint64_t *graalpy_dict_epoch = &graalpy_dict_epoch_dummy;
+static GraalPyDictMirror graalpy_dict_mirrors[GRAALPY_DICT_MIRRORS];
+static Py_ssize_t graalpy_dict_mirror_cap[GRAALPY_DICT_MIRRORS];
+/* candidate: the last pass that started at position 0 in Java */
+static PyObject *graalpy_dict_cand_op;
+static Py_ssize_t graalpy_dict_cand_pos;
+static uint64_t graalpy_dict_cand_epoch;
+static int graalpy_dict_mirror_mode = 1; /* 0: off, 1: on, 2: on and every hit verified against Java */
+/* verify-mode statistics (only counted in mode 2) */
+static long long graalpy_dict_stat_builds, graalpy_dict_stat_refused, graalpy_dict_stat_verified;
+
+static void
+graalpy_dict_mirror_report(void)
+{
+    fprintf(stderr, "GRAALPY_DICT_MIRROR=2: builds %lld refused %lld verified hits %lld\n",
+            graalpy_dict_stat_builds, graalpy_dict_stat_refused, graalpy_dict_stat_verified);
+}
+
+Py_LOCAL_SYMBOL void
+graalpy_init_dict_mirror(void)
+{
+    graalpy_dict_epoch = (uint64_t *) GraalPyPrivate_Dict_EpochPtr();
+    const char *m = getenv("GRAALPY_DICT_MIRROR");
+    if (m != NULL) {
+        graalpy_dict_mirror_mode = atoi(m);
+        if (graalpy_dict_mirror_mode == 2) {
+            atexit(graalpy_dict_mirror_report);
+        }
+    }
+}
+
+static inline GraalPyDictMirror *
+graalpy_dict_mirror_slot(PyObject *op)
+{
+    return &graalpy_dict_mirrors[((uintptr_t) op >> 4) & (GRAALPY_DICT_MIRRORS - 1)];
+}
+
+static int graalpy_dict_next_slow(PyObject *op, Py_ssize_t *ppos, PyObject **pkey, PyObject **pvalue) __attribute__((noinline));
+
+static inline int
+graalpy_dict_mirror_next(GraalPyDictMirror *m, Py_ssize_t *ppos, PyObject **pkey, PyObject **pvalue)
+{
+    Py_ssize_t i = *ppos;
+    Py_ssize_t n = m->n;
+    GraalPyDictMirrorEntry *e = m->entries;
+    if (i < 0) {
+        return 0;
+    }
+    while (i < n && e[i].key == NULL) {
+        i++;
+    }
+    if (i >= n) {
+        return 0;
+    }
+    *ppos = i + 1;
+    if (pkey) {
+        *pkey = e[i].key;
+    }
+    if (pvalue) {
+        *pvalue = e[i].value;
+    }
+    return 1;
+}
+
+static uint64_t graalpy_dict_verify_epoch[GRAALPY_DICT_MIRRORS]; /* verify mode: the real stamp */
+
+static int
+graalpy_dict_verify(GraalPyDictMirror *m, PyObject *op, Py_ssize_t pos, int r, Py_ssize_t newpos, PyObject *k, PyObject *v)
+{
+    Py_ssize_t jpos = pos;
+    PyObject *jk = NULL, *jv = NULL;
+    int jr = _PyDict_Next(op, &jpos, &jk, &jv, NULL);
+    if (jr != r || (r && (jpos != newpos || jk != k || jv != v))) {
+        fprintf(stderr, "GRAALPY_DICT_MIRROR verify mismatch: dict %p pos %zd: mirror (%d, %zd, %p, %p) java (%d, %zd, %p, %p)\n",
+                (void *) op, pos, r, newpos, (void *) k, (void *) v, jr, jpos, (void *) jk, (void *) jv);
+        abort();
+    }
+    graalpy_dict_stat_verified++;
+    /* the verifying upcall bumped the epoch; nothing changed the dict */
+    graalpy_dict_verify_epoch[m - graalpy_dict_mirrors] = *graalpy_dict_epoch;
+    return r;
+}
+
 int
 PyDict_Next(PyObject *op, Py_ssize_t *ppos, PyObject **pkey, PyObject **pvalue)
 {
-    return _PyDict_Next(op, ppos, pkey, pvalue, NULL);
+    /* fast path: a leaf (the slow path is out of line); verify mode (2) never stamps a mirror valid here */
+    GraalPyDictMirror *m = graalpy_dict_mirror_slot(op);
+    if (m->op == op && m->epoch == *graalpy_dict_epoch) {
+        return graalpy_dict_mirror_next(m, ppos, pkey, pvalue);
+    }
+    return graalpy_dict_next_slow(op, ppos, pkey, pvalue);
+}
+
+static int
+graalpy_dict_build_mirror(PyObject *op, GraalPyDictMirror *m)
+{
+    Py_ssize_t *pcap = &graalpy_dict_mirror_cap[m - graalpy_dict_mirrors];
+    m->op = NULL;
+    Py_ssize_t n = GraalPyPrivate_Dict_FillMirror(op, m->entries, *pcap);
+    if (n > *pcap) {
+        if (n > GRAALPY_DICT_MIRROR_MAX) {
+            return 0;
+        }
+        Py_ssize_t cap = n < 8 ? 8 : n + n / 4;
+        GraalPyDictMirrorEntry *e = (GraalPyDictMirrorEntry *) realloc(m->entries, cap * sizeof(GraalPyDictMirrorEntry));
+        if (e == NULL) {
+            return 0;
+        }
+        m->entries = e;
+        *pcap = cap;
+        n = GraalPyPrivate_Dict_FillMirror(op, m->entries, *pcap);
+        if (n < 0 || n > *pcap) {
+            return 0;
+        }
+    } else if (n < 0) {
+        return 0;
+    } else if (*pcap > 1024 && n < *pcap / 4) {
+        /* shrink a mirror left by a much larger dict */
+        Py_ssize_t cap = n < 8 ? 8 : n + n / 4;
+        GraalPyDictMirrorEntry *e = (GraalPyDictMirrorEntry *) realloc(m->entries, cap * sizeof(GraalPyDictMirrorEntry));
+        if (e != NULL) {
+            m->entries = e;
+            *pcap = cap;
+        }
+    }
+    m->n = n;
+    m->op = op;
+    /* stamped after the filling upcall returned (its exit bumped the epoch); no Java code ran since */
+    if (graalpy_dict_mirror_mode == 2) {
+        /* verify mode: never valid for the fast path; the slow path checks the real stamp and verifies */
+        m->epoch = 0;
+        graalpy_dict_verify_epoch[m - graalpy_dict_mirrors] = *graalpy_dict_epoch;
+    } else {
+        m->epoch = *graalpy_dict_epoch;
+    }
+    return 1;
+}
+
+static int
+graalpy_dict_next_slow(PyObject *op, Py_ssize_t *ppos, PyObject **pkey, PyObject **pvalue)
+{
+    Py_ssize_t pos = *ppos;
+    if (graalpy_dict_mirror_mode == 2) {
+        GraalPyDictMirror *m = graalpy_dict_mirror_slot(op);
+        if (m->op == op && graalpy_dict_verify_epoch[m - graalpy_dict_mirrors] == *graalpy_dict_epoch) {
+            PyObject *k = NULL, *v = NULL;
+            int r = graalpy_dict_mirror_next(m, ppos, &k, &v);
+            if (r) {
+                if (pkey) *pkey = k;
+                if (pvalue) *pvalue = v;
+            }
+            return graalpy_dict_verify(m, op, pos, r, *ppos, k, v);
+        }
+    }
+    if (graalpy_dict_mirror_mode != 0 && pos != 0 && op == graalpy_dict_cand_op && pos == graalpy_dict_cand_pos &&
+                    graalpy_dict_cand_epoch == *graalpy_dict_epoch) {
+        /* second step of a pass that started at 0, nothing ran in Java since: mirror the dict */
+        graalpy_dict_cand_op = NULL;
+        GraalPyDictMirror *m = graalpy_dict_mirror_slot(op);
+        if (graalpy_dict_build_mirror(op, m)) {
+            graalpy_dict_stat_builds += graalpy_dict_mirror_mode == 2;
+            return graalpy_dict_mirror_next(m, ppos, pkey, pvalue);
+        }
+        graalpy_dict_stat_refused += graalpy_dict_mirror_mode == 2;
+    }
+    int r = _PyDict_Next(op, ppos, pkey, pvalue, NULL);
+    if (pos == 0 && r) {
+        graalpy_dict_cand_op = op;
+        graalpy_dict_cand_pos = *ppos;
+        graalpy_dict_cand_epoch = *graalpy_dict_epoch;
+    }
+    return r;
 }
 
 

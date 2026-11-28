@@ -362,6 +362,8 @@ public final class PythonLanguage extends TruffleLanguage<PythonContext> {
     private final ConcurrentHashMap<Object, RootNode> runtimeCachedRootNodes = new ConcurrentHashMap<>();
 
     @CompilationFinal(dimensions = 1) private RootCallTarget[] capiCallTargets;
+    /** Call targets of the C API slot upcall roots ({@code TpSlotWrapper}), one per kind. */
+    private final RootCallTarget[] slotUpcallCallTargets = new RootCallTarget[3];
     @CompilationFinal(dimensions = 1) private final BuiltinFunctionRootNode[] builtinSlotsRootNodes;
 
     /**
@@ -1184,6 +1186,30 @@ public final class PythonLanguage extends TruffleLanguage<PythonContext> {
             return null;
         }
         return capiCallTargets[index];
+    }
+
+    /**
+     * The call target of a C API slot upcall root of this language, created on first use. Slot
+     * wrappers can outlive a context and be shared by contexts (wrappers of builtin slots hang off
+     * static slot objects), so the root is per language and the wrapper is passed as an argument.
+     */
+    public RootCallTarget getSlotUpcallCallTarget(int kind, Function<PythonLanguage, ? extends RootNode> factory) {
+        RootCallTarget ct = slotUpcallCallTargets[kind];
+        if (ct == null) {
+            ct = createSlotUpcallCallTarget(kind, factory);
+        }
+        return ct;
+    }
+
+    @TruffleBoundary
+    private synchronized RootCallTarget createSlotUpcallCallTarget(int kind, Function<PythonLanguage, ? extends RootNode> factory) {
+        RootCallTarget ct = slotUpcallCallTargets[kind];
+        if (ct == null) {
+            ct = factory.apply(this).getCallTarget();
+            VarHandle.storeStoreFence();
+            slotUpcallCallTargets[kind] = ct;
+        }
+        return ct;
     }
 
     public void setCapiCallTarget(int index, RootCallTarget ct) {

@@ -74,6 +74,7 @@ import com.oracle.graal.python.builtins.modules.cext.PythonCextBuiltins.CApiTern
 import com.oracle.graal.python.builtins.modules.cext.PythonCextBuiltins.CApiUnaryBuiltinNode;
 import com.oracle.graal.python.builtins.objects.PNone;
 import com.oracle.graal.python.builtins.objects.cext.capi.CApiContext;
+import com.oracle.graal.python.builtins.objects.cext.capi.CApiEpoch;
 import com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePythonObjectNode;
 import com.oracle.graal.python.builtins.objects.cext.capi.ExternalFunctionNodes.ToNativeBorrowedNode;
 import com.oracle.graal.python.builtins.objects.cext.capi.transitions.CApiTiming;
@@ -159,6 +160,13 @@ public final class PythonCextDictBuiltins {
     static long GraalPyDict_GET_SIZE(long dictPtr) {
         PDict dict = (PDict) NativeToPythonInternalNode.executeUncached(dictPtr, false);
         return HashingStorageLen.executeUncached(dict.getDictStorage());
+    }
+
+    /** Address of the "Java ran" epoch word (see CApiEpoch), read by dictobject.c. */
+    @CApiBuiltin(ret = Pointer, call = Ignored, retConversion = long.class, argConversions = {})
+    @com.oracle.truffle.api.CompilerDirectives.TruffleBoundary
+    static long GraalPyPrivate_Dict_EpochPtr() {
+        return PythonContext.get(null).getCApiEpochAddress();
     }
 
     @CApiBuiltin(ret = PyObject, args = {}, call = Direct, acquireGil = false, retConversion = PythonToNativeNewRefNode.class, argConversions = {})
@@ -316,6 +324,75 @@ public final class PythonCextDictBuiltins {
         @SuppressWarnings("unused")
         static int run(Object dict, Object posPtr, Object keyPtr, Object valuePtr, Object hashPtr) {
             return 0;
+        }
+    }
+
+    /**
+     * Fills the PyDict_Next entry mirror of dictobject.c. {@code entries} receives
+     * {@code (key, value)} borrowed pointers indexed by the storage's iterator position (the same
+     * position space as {@code _PyDict_Next}; deleted slots are {@code (NULL, NULL)}). Returns the
+     * number of index slots n (entries filled only if n <= cap), or -1 if the dict cannot be mirrored
+     * (storage that is not an economic map, or an entry that would need promotion: C then uses
+     * {@code _PyDict_Next}, whose pass at position 0 promotes, and asks again).
+     */
+    @CApiBuiltin(ret = Py_ssize_t, args = {PyObject, Pointer, Py_ssize_t}, call = Ignored, retConversion = long.class, argConversions = {NativeToPythonNode.class, long.class, long.class})
+    abstract static class GraalPyPrivate_Dict_FillMirror extends CApiTernaryBuiltinNode {
+
+        @Specialization
+        static long fill(PDict dict, long entries, long cap,
+                        @Bind Node inliningTarget,
+                        @Bind PythonContext context,
+                        @Cached CApiTransitions.PythonToNativeInternalNode toNativeNode,
+                        @Cached HashingStorageGetIterator getIterator,
+                        @Cached HashingStorageIteratorNext itNext,
+                        @Cached HashingStorageIteratorKey itKey,
+                        @Cached HashingStorageIteratorValue itValue,
+                        @Cached EnsurePythonObjectNode ensureKeyNode,
+                        @Cached EnsurePythonObjectNode ensureValueNode) {
+            long epoch0 = CApiEpoch.read(context);
+            HashingStorage storage = dict.getDictStorage();
+            if (storage instanceof com.oracle.graal.python.builtins.objects.common.EmptyStorage) {
+                return 0;
+            }
+            if (!(storage instanceof EconomicMapStorage)) {
+                return -1;
+            }
+            long n = 0;
+            HashingStorageIterator it = getIterator.execute(inliningTarget, storage);
+            while (itNext.execute(inliningTarget, storage, it)) {
+                Object key = itKey.execute(inliningTarget, storage, it);
+                Object value = itValue.execute(inliningTarget, storage, it);
+                if (ensureKeyNode.execute(context, key, false) != key || ensureValueNode.execute(context, value, false) != value) {
+                    return -1;
+                }
+                n = it.getState() + 1L;
+            }
+            if (n > cap) {
+                return n;
+            }
+            NativeMemory.memset(entries, (byte) 0, 16 * n);
+            it = getIterator.execute(inliningTarget, storage);
+            while (itNext.execute(inliningTarget, storage, it)) {
+                long slot = entries + 16L * it.getState();
+                // borrowed references: the dict holds key and value (promoted above)
+                NativeMemory.writePtr(slot, toNativeNode.execute(inliningTarget, itKey.execute(inliningTarget, storage, it)));
+                NativeMemory.writePtr(slot + 8, toNativeNode.execute(inliningTarget, itValue.execute(inliningTarget, storage, it)));
+            }
+            /*
+             * Conversions may run native code (deallocation of released references when the reference
+             * queue is polled) or hand the GIL to another thread at a safepoint; both bump the epoch and
+             * may have changed the dict while we read it: refuse the mirror then.
+             */
+            if (epoch0 == 0 || CApiEpoch.read(context) != epoch0) {
+                return -1;
+            }
+            return n;
+        }
+
+        @Fallback
+        @SuppressWarnings("unused")
+        static long run(Object dict, Object entries, Object cap) {
+            return -1;
         }
     }
 

@@ -1964,6 +1964,18 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
             return true;
         }
 
+        /** A range whose values all fit a long yields longs (no BigInteger, no PInt). */
+        @Specialization(guards = "iterator.isLongMode()")
+        public static boolean doBigRangeLong(VirtualFrame frame, LocalAccessor output, com.oracle.graal.python.builtins.objects.iterator.PBigRangeIterator iterator,
+                        @Bind BytecodeNode bytecode) {
+            if (iterator.isExhausted() || !iterator.hasNextLong()) {
+                iterator.setExhausted();
+                return false;
+            }
+            output.setLong(bytecode, frame, iterator.nextLong());
+            return true;
+        }
+
         @Specialization
         public static boolean doDoubleIterator(VirtualFrame frame, LocalAccessor output, PDoubleSequenceIterator iterator,
                         @Bind BytecodeNode bytecode) {
