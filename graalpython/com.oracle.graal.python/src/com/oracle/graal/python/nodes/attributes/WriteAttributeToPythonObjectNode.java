@@ -86,6 +86,7 @@ public abstract class WriteAttributeToPythonObjectNode extends PNodeWithContext 
     static void write(PythonObject dynamicObject, TruffleString key, Object value,
                     @Cached DynamicObject.PutNode putNode) {
         assert !PythonOptions.detailedAssertionsEnabled() || GetDictIfExistsNode.getDictUncached(dynamicObject) == null : "direct attribute write with a backing dictionary";
+        com.oracle.graal.python.runtime.nativeaccess.NativeInstance.pinIfNative(value);
         putNode.execute(dynamicObject, key, value);
     }
 }

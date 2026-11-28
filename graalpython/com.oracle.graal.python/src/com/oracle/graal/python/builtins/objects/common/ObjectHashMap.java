@@ -781,6 +781,7 @@ public class ObjectHashMap extends HashingStorage {
 
             if (foundEqKey.profile(inliningTarget, index != DUMMY_INDEX && map.keysEqual(metadata, frame, inliningTarget, unwrapIndex(index), key, keyHash, eqNode))) {
                 // we found the key, override the value, Python does not override the key though
+                com.oracle.graal.python.runtime.nativeaccess.NativeInstance.pinIfNative(value, com.oracle.graal.python.runtime.nativeaccess.NativeInstance.C_PIN_DICT);
                 map.setValue(unwrapIndex(index), value);
                 return;
             }
@@ -815,6 +816,7 @@ public class ObjectHashMap extends HashingStorage {
                     if (collisionFoundEqKey.profile(inliningTarget, index != DUMMY_INDEX && map.keysEqual(metadata, frame, inliningTarget, unwrapIndex(index), key, keyHash, eqNode))) {
                         // we found the key, override the value, Python does not override the key
                         // though
+                        com.oracle.graal.python.runtime.nativeaccess.NativeInstance.pinIfNative(value, com.oracle.graal.python.runtime.nativeaccess.NativeInstance.C_PIN_DICT);
                         map.setValue(unwrapIndex(index), value);
                         return;
                     }
@@ -866,6 +868,8 @@ public class ObjectHashMap extends HashingStorage {
     private void putInNewSlot(byte[] localMetadata, int indicesOffset, int indexByteSize, int physicalCollisionMask, int entryCapacity, int bucketsCount, Node inliningTarget,
                     InlinedBranchProfile rehashProfile, Object key, long keyHash, Object value, int compactIndex) {
         assert metadata == localMetadata;
+        com.oracle.graal.python.runtime.nativeaccess.NativeInstance.pinIfNative(key, com.oracle.graal.python.runtime.nativeaccess.NativeInstance.C_PIN_DICT);
+        com.oracle.graal.python.runtime.nativeaccess.NativeInstance.pinIfNative(value, com.oracle.graal.python.runtime.nativeaccess.NativeInstance.C_PIN_DICT);
         assert entryCapacity == getEntryCapacity();
         if (CompilerDirectives.injectBranchProbability(SLOWPATH_PROBABILITY, needsResize(entryCapacity, bucketsCount))) {
             rehashProfile.enter(inliningTarget);

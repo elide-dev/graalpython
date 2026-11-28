@@ -35,6 +35,10 @@ public abstract class SequenceStorage {
         Int,
         Long,
         Double,
+        /** Raw pointers to native complex structs. */
+        ComplexPtr,
+        /** Native-instance words (instance pointers or None). */
+        InstPtr,
         Generic;
 
         public boolean generalizesFrom(StorageType other) {
@@ -42,6 +46,8 @@ public abstract class SequenceStorage {
                 case Uninitialized, Empty -> false;
                 case Boolean, Byte, Double, Int -> other == Uninitialized || other == Empty || other == Byte;
                 case Long -> other == Uninitialized || other == Empty || other == Byte || other == Int;
+                case ComplexPtr -> other == Uninitialized || other == Empty;
+                case InstPtr -> other == Uninitialized || other == Empty;
                 default -> true;
             };
         }

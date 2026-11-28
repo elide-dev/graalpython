@@ -94,7 +94,8 @@ public abstract class WriteAttributeToObjectNode extends PNodeWithContext {
     }
 
     static boolean isAttrWritable(PythonObject self) {
-        return (self.getShape().getFlags() & PythonObject.HAS_SLOTS_BUT_NO_DICT_FLAG) == 0;
+        // A value copy of a native float subclass instance has no dict (the native type has none)
+        return (self.getShape().getFlags() & PythonObject.HAS_SLOTS_BUT_NO_DICT_FLAG) == 0 && !(self instanceof com.oracle.graal.python.builtins.objects.floats.PNativeFloat);
     }
 
     static boolean writeToDynamicStorageNoTypeGuard(PythonObject obj, GetDictIfExistsNode getDict) {
@@ -153,6 +154,7 @@ public abstract class WriteAttributeToObjectNode extends PNodeWithContext {
     private static boolean writeToDynamicStorageManagedClass(PythonManagedClass klass, TruffleString key, Object value, DynamicObject.PutNode putNode) {
         CompilerAsserts.partialEvaluationConstant(klass.getClass());
         try {
+            com.oracle.graal.python.runtime.nativeaccess.NativeInstance.pinIfNative(value);
             putNode.execute(klass, key, value);
             return true;
         } finally {

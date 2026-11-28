@@ -290,6 +290,502 @@ static inline PyObject* unicode_get_empty(void)
 #endif // GraalPy change
 }
 
+/* ---------------------------------------------------------------------------------------------
+ * GraalPy change: exact str values as native CPython-layout compact objects.
+ *
+ * An exact str that crosses into C (made by Java, NativeStr.java) or that C creates
+ * (PyUnicode_New, PyUnicode_FromStringAndSize, the UTF-8 decoder, PyUnicode_FromKindAndData) is a
+ * plain PyASCIIObject / PyCompactUnicodeObject with the characters inline, allocated with malloc,
+ * counted by C and freed by unicode_dealloc. It has no Java wrapper, no stub and no handle. The
+ * 4 bytes of padding after 'state' (offset 36) carry bit 31 as the mark of this scheme and, in the
+ * low bits, 1 + an index into Java's identity ring (0: none). Java reads such a struct into a
+ * TruffleString when it needs the value.
+ * ------------------------------------------------------------------------------------------- */
+
+typedef struct {
+    PyTypeObject *type;           /* @0: &PyUnicode_Type when the scheme is on, else NULL */
+    int64_t counters[8];          /* @8: see NativeStr.COUNTER_NAMES */
+} GraalPyStrState;
+
+_Static_assert(sizeof(PyASCIIObject) == 40, "str layout");
+_Static_assert(sizeof(PyCompactUnicodeObject) == 56, "str layout");
+_Static_assert(offsetof(PyASCIIObject, state) == 32, "str layout");
+_Static_assert(offsetof(GraalPyStrState, counters) == 8, "str state layout");
+
+#define GRAALPY_STR_MARK 0x80000000u
+#define GRAALPY_STR_SLOT_MASK 0x7fffffffu
+#define GRAALPY_STR_C_ALLOC 4
+#define GRAALPY_STR_C_FREE 5
+
+static GraalPyStrState graalpy_str_state_dummy;
+static GraalPyStrState *graalpy_str_state = &graalpy_str_state_dummy;
+
+static inline uint32_t *
+graalpy_str_jslot(PyObject *op)
+{
+    return (uint32_t *) ((char *) op + 36);
+}
+
+static inline int
+graalpy_str_enabled(void)
+{
+    return graalpy_str_state->type != NULL;
+}
+
+/* A str struct of this scheme (not a handle, exact, marked)? */
+static inline int
+graalpy_str_is_native(PyObject *op)
+{
+    return !points_to_py_handle_space(op) && op->ob_type == &PyUnicode_Type && (*graalpy_str_jslot(op) & GRAALPY_STR_MARK);
+}
+
+static inline void *
+graalpy_str_data(PyObject *op)
+{
+    PyASCIIObject *a = (PyASCIIObject *) op;
+    return a->state.ascii ? (void *) (a + 1) : (void *) (((PyCompactUnicodeObject *) op) + 1);
+}
+
+/* New str with count 1, header initialized and the NUL unit written; characters not written. */
+static PyObject *
+graalpy_str_alloc(Py_ssize_t length, int kind, int ascii)
+{
+    size_t header = ascii ? sizeof(PyASCIIObject) : sizeof(PyCompactUnicodeObject);
+    /* a Java string holds at most INT32_MAX bytes of characters: same limit as the managed path */
+    if (length < 0 || (size_t) length > (size_t) INT32_MAX / (size_t) kind - 1) {
+        return PyErr_NoMemory();
+    }
+    char *p = (char *) malloc(header + ((size_t) length + 1) * (size_t) kind);
+    if (p == NULL) {
+        return PyErr_NoMemory();
+    }
+    PyASCIIObject *a = (PyASCIIObject *) p;
+    ((PyObject *) p)->ob_refcnt = 1;
+    ((PyObject *) p)->ob_type = &PyUnicode_Type;
+    a->length = length;
+    a->hash = -1;
+    memset(&a->state, 0, sizeof(a->state));
+    a->state.kind = kind;
+    a->state.compact = 1;
+    a->state.ascii = ascii ? 1 : 0;
+    *graalpy_str_jslot((PyObject *) p) = GRAALPY_STR_MARK;
+    if (!ascii) {
+        ((PyCompactUnicodeObject *) p)->utf8_length = 0;
+        ((PyCompactUnicodeObject *) p)->utf8 = NULL;
+    }
+    char *end = p + header + (size_t) length * kind;
+    memset(end, 0, kind);
+    graalpy_str_state->counters[GRAALPY_STR_C_ALLOC]++;
+    return (PyObject *) p;
+}
+
+static void
+graalpy_str_free(PyObject *op)
+{
+    if (!((PyASCIIObject *) op)->state.ascii) {
+        char *u8 = ((PyCompactUnicodeObject *) op)->utf8;
+        if (u8 != NULL) {
+            free(u8);
+        }
+    }
+    op->ob_type = NULL;
+    free(op);
+    graalpy_str_state->counters[GRAALPY_STR_C_FREE]++;
+}
+
+/* Resizes a native str in place (caller checked unicode_modifiable); libc realloc, as allocated. */
+static PyObject *
+graalpy_str_resize_inplace(PyObject *u, Py_ssize_t length)
+{
+    PyASCIIObject *a = (PyASCIIObject *) u;
+    int kind = a->state.kind;
+    size_t header = a->state.ascii ? sizeof(PyASCIIObject) : sizeof(PyCompactUnicodeObject);
+    if (length < 0 || (size_t) length > (size_t) INT32_MAX / (size_t) kind - 1) {
+        PyErr_NoMemory();
+        return NULL;
+    }
+    if (!a->state.ascii && ((PyCompactUnicodeObject *) u)->utf8 != NULL) {
+        free(((PyCompactUnicodeObject *) u)->utf8);
+        ((PyCompactUnicodeObject *) u)->utf8 = NULL;
+        ((PyCompactUnicodeObject *) u)->utf8_length = 0;
+    }
+    char *n = (char *) realloc(u, header + ((size_t) length + 1) * kind);
+    if (n == NULL) {
+        PyErr_NoMemory();
+        return NULL;
+    }
+    a = (PyASCIIObject *) n;
+    a->length = length;
+    a->hash = -1;
+    memset(n + header + (size_t) length * kind, 0, kind);
+    return (PyObject *) n;
+}
+
+/* Hash equal to Java's str hash (TruffleString's hash of the UTF-32 code points, then GraalPy's
+   avoidNegative1), cached in the struct like CPython. */
+static Py_hash_t
+graalpy_str_hash(PyObject *op)
+{
+    PyASCIIObject *a = (PyASCIIObject *) op;
+    if (a->hash != -1) {
+        return a->hash;
+    }
+    Py_ssize_t n = a->length;
+    /* A long string that Java still maps to its Java string: Java caches the hash there, so one
+       upcall is cheaper than hashing again for every fresh copy. */
+    if (n >= 128 && (*graalpy_str_jslot(op) & GRAALPY_STR_SLOT_MASK) != 0) {
+        Py_hash_t jh = GraalPyPrivate_Object_Hash(op);
+        if (jh != -1) {
+            a->hash = jh;
+            return jh;
+        }
+        PyErr_Clear();
+    }
+    uint32_t h = 0;
+    const void *data = graalpy_str_data(op);
+    /* h = 31*h + c, 8 characters per step with independent products (same value, shorter chain) */
+#define GRAALPY_HASH_LOOP(T) do { \
+        const T *d = (const T *) data; Py_ssize_t i = 0; \
+        for (; i + 8 <= n; i += 8) { \
+            h = h * 0x94446F01u /* 31^8 mod 2^32 */ \
+                + d[i] * 0x67E12CDFu + d[i + 1] * 0x34E63B41u + d[i + 2] * 0x01B4D89Fu /* 31^7..31^5 */ \
+                + d[i + 3] * 0x000E1781u + d[i + 4] * 0x0000745Fu + d[i + 5] * 0x000003C1u /* 31^4..31^2 */ \
+                + d[i + 6] * 31u + d[i + 7]; \
+        } \
+        for (; i < n; i++) h = 31 * h + d[i]; \
+    } while (0)
+    switch (a->state.kind) {
+    case PyUnicode_1BYTE_KIND:
+        GRAALPY_HASH_LOOP(Py_UCS1);
+        break;
+    case PyUnicode_2BYTE_KIND:
+        GRAALPY_HASH_LOOP(Py_UCS2);
+        break;
+    default:
+        GRAALPY_HASH_LOOP(Py_UCS4);
+        break;
+    }
+#undef GRAALPY_HASH_LOOP
+    int32_t hi = (int32_t) h;
+    if (hi == 0) {
+        hi = -1;  /* TruffleString's MASKED_ZERO_HASH_CODE */
+    }
+    Py_hash_t r = hi;
+    if (r == -1) {
+        r = -2;   /* PyObjectHashNode.avoidNegative1 */
+    }
+    a->hash = r;
+    return r;
+}
+
+/* Code-point comparison of two native str structs (any kinds): <0, 0, >0. */
+static int
+graalpy_str_compare(PyObject *x, PyObject *y)
+{
+    PyASCIIObject *a = (PyASCIIObject *) x, *b = (PyASCIIObject *) y;
+    Py_ssize_t n1 = a->length, n2 = b->length, n = n1 < n2 ? n1 : n2;
+    int k1 = a->state.kind, k2 = b->state.kind;
+    const void *d1 = graalpy_str_data(x), *d2 = graalpy_str_data(y);
+    if (k1 == 1 && k2 == 1) {
+        int c = memcmp(d1, d2, (size_t) n);
+        if (c != 0) {
+            return c < 0 ? -1 : 1;
+        }
+    } else {
+        for (Py_ssize_t i = 0; i < n; i++) {
+            Py_UCS4 c1 = PyUnicode_READ(k1, d1, i), c2 = PyUnicode_READ(k2, d2, i);
+            if (c1 != c2) {
+                return c1 < c2 ? -1 : 1;
+            }
+        }
+    }
+    return n1 < n2 ? -1 : n1 > n2 ? 1 : 0;
+}
+
+/* Decodes strict UTF-8 into a new native str. Returns NULL with *invalid = 1 (no exception set)
+   if the input is not valid UTF-8 (lone surrogates included); NULL with an exception on memory
+   errors. */
+static PyObject *
+graalpy_str_from_utf8(const char *s, Py_ssize_t size, int *invalid)
+{
+    const unsigned char *p = (const unsigned char *) s, *end = p + size;
+    *invalid = 0;
+    /* ASCII prefix, 8 bytes at a time */
+    while (p + 8 <= end) {
+        uint64_t w;
+        memcpy(&w, p, 8);
+        if (w & 0x8080808080808080ULL) {
+            break;
+        }
+        p += 8;
+    }
+    while (p < end && *p < 0x80) {
+        p++;
+    }
+    if (p == end) {
+        PyObject *u = graalpy_str_alloc(size, 1, 1);
+        if (u != NULL && size > 0) {
+            memcpy(graalpy_str_data(u), s, (size_t) size);
+        }
+        return u;
+    }
+    /* validate the rest, count code points, find the max */
+    Py_ssize_t n = (const char *) p - s;
+    Py_UCS4 maxchar = 0x7f;
+    const unsigned char *q = p;
+    while (q < end) {
+        unsigned int c = *q;
+        Py_UCS4 cp;
+        if (c < 0x80) {
+            q++;
+            n++;
+            continue;
+        } else if (c < 0xC2) {
+            goto bad;
+        } else if (c < 0xE0) {
+            if (end - q < 2 || (q[1] & 0xC0) != 0x80) goto bad;
+            cp = ((c & 0x1F) << 6) | (q[1] & 0x3F);
+            q += 2;
+        } else if (c < 0xF0) {
+            if (end - q < 3 || (q[1] & 0xC0) != 0x80 || (q[2] & 0xC0) != 0x80) goto bad;
+            if (c == 0xE0 && q[1] < 0xA0) goto bad;   /* overlong */
+            if (c == 0xED && q[1] >= 0xA0) goto bad;  /* surrogate */
+            cp = ((c & 0x0F) << 12) | ((q[1] & 0x3F) << 6) | (q[2] & 0x3F);
+            q += 3;
+        } else if (c < 0xF5) {
+            if (end - q < 4 || (q[1] & 0xC0) != 0x80 || (q[2] & 0xC0) != 0x80 || (q[3] & 0xC0) != 0x80) goto bad;
+            if (c == 0xF0 && q[1] < 0x90) goto bad;   /* overlong */
+            if (c == 0xF4 && q[1] >= 0x90) goto bad;  /* > U+10FFFF */
+            cp = ((c & 0x07) << 18) | ((q[1] & 0x3F) << 12) | ((q[2] & 0x3F) << 6) | (q[3] & 0x3F);
+            q += 4;
+        } else {
+            goto bad;
+        }
+        if (cp > maxchar) maxchar = cp;
+        n++;
+    }
+    {
+        int kind = maxchar < 256 ? 1 : maxchar < 65536 ? 2 : 4;
+        PyObject *u = graalpy_str_alloc(n, kind, 0);
+        if (u == NULL) {
+            return NULL;
+        }
+        void *data = graalpy_str_data(u);
+        Py_ssize_t i = 0;
+        q = (const unsigned char *) s;
+        while (q < end) {
+            unsigned int c = *q;
+            Py_UCS4 cp;
+            if (c < 0x80) {
+                cp = c;
+                q++;
+            } else if (c < 0xE0) {
+                cp = ((c & 0x1F) << 6) | (q[1] & 0x3F);
+                q += 2;
+            } else if (c < 0xF0) {
+                cp = ((c & 0x0F) << 12) | ((q[1] & 0x3F) << 6) | (q[2] & 0x3F);
+                q += 3;
+            } else {
+                cp = ((c & 0x07) << 18) | ((q[1] & 0x3F) << 12) | ((q[2] & 0x3F) << 6) | (q[3] & 0x3F);
+                q += 4;
+            }
+            PyUnicode_WRITE(kind, data, i, cp);
+            i++;
+        }
+        return u;
+    }
+bad:
+    *invalid = 1;
+    return NULL;
+}
+
+/* New native str from kind data; picks the smallest kind like CPython. */
+static PyObject *
+graalpy_str_from_kind(int kind, const void *buf, Py_ssize_t size)
+{
+    Py_UCS4 maxchar = 0;
+    for (Py_ssize_t i = 0; i < size; i++) {
+        Py_UCS4 c = PyUnicode_READ(kind, buf, i);
+        if (c > maxchar) maxchar = c;
+    }
+    if (maxchar > MAX_UNICODE) {
+        PyErr_SetString(PyExc_ValueError, "character is not in range [U+0000; U+10ffff]");
+        return NULL;
+    }
+    int k = maxchar < 256 ? 1 : maxchar < 65536 ? 2 : 4;
+    PyObject *u = graalpy_str_alloc(size, k, maxchar < 128);
+    if (u == NULL) {
+        return NULL;
+    }
+    void *data = graalpy_str_data(u);
+    if (k == kind) {
+        memcpy(data, buf, (size_t) size * kind);
+    } else {
+        for (Py_ssize_t i = 0; i < size; i++) {
+            PyUnicode_WRITE(k, data, i, PyUnicode_READ(kind, buf, i));
+        }
+    }
+    return u;
+}
+
+/* Fills the UTF-8 cache of a native non-ASCII str. -1 with an exception for lone surrogates. */
+static int
+graalpy_str_fill_utf8(PyObject *op)
+{
+    PyCompactUnicodeObject *c = (PyCompactUnicodeObject *) op;
+    Py_ssize_t n = c->_base.length;
+    int kind = c->_base.state.kind;
+    const void *data = graalpy_str_data(op);
+    size_t len = 0;
+    for (Py_ssize_t i = 0; i < n; i++) {
+        Py_UCS4 ch = PyUnicode_READ(kind, data, i);
+        if (ch < 0x80) {
+            len += 1;
+        } else if (ch < 0x800) {
+            len += 2;
+        } else if (ch < 0x10000) {
+            if (Py_UNICODE_IS_SURROGATE(ch)) {
+                /* let the managed encoder raise the proper UnicodeEncodeError */
+                PyObject *r = PyUnicode_AsUTF8String(op);
+                Py_XDECREF(r);
+                if (!PyErr_Occurred()) {
+                    PyErr_SetString(PyExc_UnicodeEncodeError, "surrogates not allowed");
+                }
+                return -1;
+            }
+            len += 3;
+        } else {
+            len += 4;
+        }
+    }
+    char *u8 = (char *) malloc(len + 1);
+    if (u8 == NULL) {
+        PyErr_NoMemory();
+        return -1;
+    }
+    char *w = u8;
+    for (Py_ssize_t i = 0; i < n; i++) {
+        Py_UCS4 ch = PyUnicode_READ(kind, data, i);
+        if (ch < 0x80) {
+            *w++ = (char) ch;
+        } else if (ch < 0x800) {
+            *w++ = (char) (0xc0 | (ch >> 6));
+            *w++ = (char) (0x80 | (ch & 0x3f));
+        } else if (ch < 0x10000) {
+            *w++ = (char) (0xe0 | (ch >> 12));
+            *w++ = (char) (0x80 | ((ch >> 6) & 0x3f));
+            *w++ = (char) (0x80 | (ch & 0x3f));
+        } else {
+            *w++ = (char) (0xf0 | (ch >> 18));
+            *w++ = (char) (0x80 | ((ch >> 12) & 0x3f));
+            *w++ = (char) (0x80 | ((ch >> 6) & 0x3f));
+            *w++ = (char) (0x80 | (ch & 0x3f));
+        }
+    }
+    *w = 0;
+    c->utf8 = u8;
+    c->utf8_length = (Py_ssize_t) len;
+    return 0;
+}
+
+/* For object.c: the hash of a native str, computed in C; 0 if op is not one. */
+Py_LOCAL_SYMBOL int
+GraalPyPrivate_Str_HashIfNative(PyObject *op, Py_hash_t *hash)
+{
+    if (graalpy_str_is_native(op)) {
+        *hash = graalpy_str_hash(op);
+        return 1;
+    }
+    return 0;
+}
+
+/* Equality of a native str with any exact str (a handle-space stub included), by code points. */
+static int
+graalpy_str_equal_any(PyObject *x, PyObject *y)
+{
+    Py_ssize_t n = PyUnicode_GET_LENGTH(x);
+    if (n != PyUnicode_GET_LENGTH(y)) {
+        return 0;
+    }
+    int k1 = PyUnicode_KIND(x), k2 = PyUnicode_KIND(y);
+    const void *d1 = PyUnicode_DATA(x), *d2 = PyUnicode_DATA(y);
+    if (k1 == k2) {
+        return memcmp(d1, d2, (size_t) n * k1) == 0;
+    }
+    for (Py_ssize_t i = 0; i < n; i++) {
+        if (PyUnicode_READ(k1, d1, i) != PyUnicode_READ(k2, d2, i)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+#define GRAALPY_INTERN_CACHE 4096
+typedef struct {
+    Py_hash_t hash;
+    PyObject *obj;    /* owned reference to the interned object */
+} GraalPyInternEntry;
+static GraalPyInternEntry graalpy_intern_cache[GRAALPY_INTERN_CACHE];
+
+static destructor graalpy_unicode_orig_dealloc;
+static hashfunc graalpy_unicode_orig_hash;
+
+static void
+graalpy_unicode_dealloc(PyObject *op)
+{
+    if (graalpy_str_is_native(op)) {
+        graalpy_str_free(op);
+        return;
+    }
+    if (graalpy_unicode_orig_dealloc != NULL) {
+        graalpy_unicode_orig_dealloc(op);
+    }
+}
+
+static Py_hash_t
+graalpy_unicode_hash_slot(PyObject *op)
+{
+    if (graalpy_str_is_native(op)) {
+        return graalpy_str_hash(op);
+    }
+    return graalpy_unicode_orig_hash(op);
+}
+
+/* Called from capi.c after the builtin types are initialized. GRAALPY_NATIVE_STR=0 turns the
+   scheme off (Java then sees no type pointer and keeps the stub path). */
+Py_LOCAL_SYMBOL void
+graalpy_init_str(void)
+{
+    graalpy_str_state = (GraalPyStrState *) GraalPyPrivate_Str_State();
+    const char *env = getenv("GRAALPY_NATIVE_STR");
+    if (env != NULL && env[0] == '0') {
+        graalpy_str_state->type = NULL;
+        return;
+    }
+    /* NativeStr.java writes the state word as an int: check the bitfield order agrees */
+    PyASCIIObject probe;
+    memset(&probe, 0, sizeof(probe));
+    probe.state.kind = 2;
+    probe.state.compact = 1;
+    probe.state.ascii = 1;
+    uint32_t word;
+    memcpy(&word, &probe.state, 4);
+    if (word != ((2u << 2) | (1u << 5) | (1u << 6))) {
+        fprintf(stderr, "GraalPy: native str disabled, unexpected state bit layout 0x%x\n", word);
+        graalpy_str_state->type = NULL;
+        return;
+    }
+    graalpy_unicode_orig_dealloc = PyUnicode_Type.tp_dealloc;
+    PyUnicode_Type.tp_dealloc = graalpy_unicode_dealloc;
+    graalpy_unicode_orig_hash = PyUnicode_Type.tp_hash;
+    if (graalpy_unicode_orig_hash != NULL) {
+        PyUnicode_Type.tp_hash = graalpy_unicode_hash_slot;
+    }
+    graalpy_str_state->type = &PyUnicode_Type;
+}
+/* ------------------------------------------------------------------ end of native str block */
+
+
 #if 0 // GraalPy change
 /* This dictionary holds per-interpreter interned strings.
  * See InternalDocs/string_interning.md for details.
@@ -1217,6 +1713,10 @@ resize_compact(PyObject *unicode, Py_ssize_t length)
         return copy;
     }
     assert(PyUnicode_IS_COMPACT(unicode));
+    // GraalPy change: native strs come from libc malloc
+    if (graalpy_str_is_native(unicode)) {
+        return graalpy_str_resize_inplace(unicode, length);
+    }
 
     char_size = PyUnicode_KIND(unicode);
     if (PyUnicode_IS_ASCII(unicode))
@@ -1474,6 +1974,10 @@ PyUnicode_New(Py_ssize_t size, Py_UCS4 maxchar)
         return NULL;
     }
 
+    // GraalPy change: born native
+    if (graalpy_str_enabled()) {
+        return graalpy_str_alloc(size, kind, is_ascii);
+    }
     return GraalPyPrivate_Unicode_New(size, kind, is_ascii);
 }
 
@@ -1898,6 +2402,9 @@ unicode_modifiable(PyObject *unicode)
     // GraalPy change
     if (points_to_py_handle_space(unicode) && Py_REFCNT(unicode) != MANAGED_REFCNT) // GraalPy change
         return GraalPyPrivate_Unicode_IsMaterialized(unicode) == 0;
+    // GraalPy change: a native str Java has seen may be mapped to a Java string
+    if (graalpy_str_is_native(unicode) && (*graalpy_str_jslot(unicode) & GRAALPY_STR_SLOT_MASK) != 0)
+        return 0;
     if (!_PyObject_IsUniquelyReferenced(unicode))
         return 0;
     if (PyUnicode_HASH(unicode) != -1)
@@ -1911,6 +2418,46 @@ unicode_modifiable(PyObject *unicode)
     assert(!unicode_is_singleton(unicode));
 #endif
     return 1;
+}
+
+// GraalPy change: PyUnicode_Resize (was not implemented): a native str that nothing else
+// can see is resized in place; anything else is copied into a new string.
+int
+PyUnicode_Resize(PyObject **p_unicode, Py_ssize_t length)
+{
+    if (p_unicode == NULL) {
+        PyErr_BadInternalCall();
+        return -1;
+    }
+    PyObject *u = *p_unicode;
+    if (u == NULL || !PyUnicode_Check(u) || length < 0) {
+        PyErr_BadInternalCall();
+        return -1;
+    }
+    Py_ssize_t old = PyUnicode_GET_LENGTH(u);
+    if (old == length) {
+        return 0;
+    }
+    if (graalpy_str_is_native(u) && unicode_modifiable(u)) {
+        PyObject *n = graalpy_str_resize_inplace(u, length);
+        if (n == NULL) {
+            return -1;
+        }
+        *p_unicode = n;
+        return 0;
+    }
+    PyObject *c = PyUnicode_New(length, PyUnicode_MAX_CHAR_VALUE(u));
+    if (c == NULL) {
+        return -1;
+    }
+    int k1 = PyUnicode_KIND(u), k2 = PyUnicode_KIND(c);
+    const void *d1 = PyUnicode_DATA(u);
+    void *d2 = PyUnicode_DATA(c);
+    for (Py_ssize_t i = 0; i < old && i < length; i++) {
+        PyUnicode_WRITE(k2, d2, i, PyUnicode_READ(k1, d1, i));
+    }
+    Py_SETREF(*p_unicode, c);
+    return 0;
 }
 
 #if 0 // GraalPy change
@@ -2154,6 +2701,14 @@ PyUnicode_FromStringAndSize(const char *u, Py_ssize_t size)
         return NULL;
     }
     if (u != NULL) {
+        // GraalPy change: decode valid UTF-8 natively; invalid input takes the managed path (errors)
+        if (graalpy_str_enabled()) {
+            int invalid;
+            PyObject *r = graalpy_str_from_utf8(u, size, &invalid);
+            if (r != NULL || !invalid) {
+                return r;
+            }
+        }
         // GraalPy change: decode through the managed Unicode implementation.
         return GraalPyPrivate_Unicode_FromUTF((void*) u, size, 1);
     }
@@ -2178,6 +2733,21 @@ PyUnicode_FromString(const char *u)
 }
 #endif
 
+
+// GraalPy change: C implementation (was a managed builtin)
+PyObject *
+PyUnicode_FromString(const char *u)
+{
+    if (graalpy_str_enabled()) {
+        size_t size = strlen(u);
+        int invalid;
+        PyObject *r = graalpy_str_from_utf8(u, (Py_ssize_t) size, &invalid);
+        if (r != NULL || !invalid) {
+            return r;
+        }
+    }
+    return GraalPyPrivate_Unicode_FromString(u);
+}
 
 PyObject *
 _PyUnicode_FromId(_Py_Identifier *id)
@@ -2255,6 +2825,10 @@ kind_maxchar_limit(int kind)
 static PyObject*
 _PyUnicode_FromUCS1(const Py_UCS1* u, Py_ssize_t size)
 {
+    // GraalPy change
+    if (graalpy_str_enabled()) {
+        return graalpy_str_from_kind(PyUnicode_1BYTE_KIND, u, size);
+    }
     // GraalPy change: different implementation
     return GraalPyPrivate_Unicode_FromUCS((int8_t *)u, size, PyUnicode_1BYTE_KIND);
 }
@@ -2262,6 +2836,10 @@ _PyUnicode_FromUCS1(const Py_UCS1* u, Py_ssize_t size)
 static PyObject*
 _PyUnicode_FromUCS2(const Py_UCS2 *u, Py_ssize_t size)
 {
+    // GraalPy change
+    if (graalpy_str_enabled()) {
+        return graalpy_str_from_kind(PyUnicode_2BYTE_KIND, u, size);
+    }
     // GraalPy change: different implementation
     const Py_ssize_t byte_size = size * PyUnicode_2BYTE_KIND;
     return GraalPyPrivate_Unicode_FromUCS((int8_t *)u, byte_size, PyUnicode_2BYTE_KIND);
@@ -2270,6 +2848,10 @@ _PyUnicode_FromUCS2(const Py_UCS2 *u, Py_ssize_t size)
 static PyObject*
 _PyUnicode_FromUCS4(const Py_UCS4 *u, Py_ssize_t size)
 {
+    // GraalPy change
+    if (graalpy_str_enabled()) {
+        return graalpy_str_from_kind(PyUnicode_4BYTE_KIND, u, size);
+    }
     // GraalPy change: different implementation
     const Py_ssize_t byte_size = size * PyUnicode_4BYTE_KIND;
     return GraalPyPrivate_Unicode_FromUCS((int8_t *)u, byte_size, PyUnicode_4BYTE_KIND);
@@ -4000,6 +4582,15 @@ PyUnicode_AsUTF8AndSize(PyObject *unicode, Py_ssize_t *psize)
     }
 
     if (PyUnicode_UTF8(unicode) == NULL) {
+        // GraalPy change: native strs encode in C
+        if (graalpy_str_is_native(unicode)) {
+            if (graalpy_str_fill_utf8(unicode) == -1) {
+                if (psize) {
+                    *psize = -1;
+                }
+                return NULL;
+            }
+        } else
         // GraalPy change: upcall
         if (GraalPyPrivate_Unicode_FillUtf8(unicode) == -1) {
             if (psize) {
@@ -5011,6 +5602,17 @@ PyUnicode_DecodeUTF8Stateful(const char *s,
                              const char *errors,
                              Py_ssize_t *consumed)
 {
+    // GraalPy change: valid UTF-8 is decoded natively (any error handler: none is used)
+    if (graalpy_str_enabled() && size >= 0) {
+        int invalid;
+        PyObject *r = graalpy_str_from_utf8(s, size, &invalid);
+        if (r != NULL || !invalid) {
+            if (r != NULL && consumed != NULL) {
+                *consumed = size;
+            }
+            return r;
+        }
+    }
     // GraalPy change: different implementation
 	PyObject* result = GraalPyPrivate_Unicode_DecodeUTF8Stateful(
                                                 (void*) s, size,
@@ -10580,6 +11182,94 @@ PyUnicode_CompareWithASCIIString(PyObject* uni, const char* str)
 }
 #endif // GraalPy change
 
+// GraalPy change: C implementations for native strs; others go to the managed builtins
+int
+PyUnicode_Compare(PyObject *left, PyObject *right)
+{
+    if (graalpy_str_is_native(left) && graalpy_str_is_native(right)) {
+        return graalpy_str_compare(left, right);
+    }
+    return GraalPyPrivate_Unicode_Compare(left, right);
+}
+
+int
+PyUnicode_CompareWithASCIIString(PyObject* uni, const char* str)
+{
+    if (!graalpy_str_is_native(uni)) {
+        return GraalPyPrivate_Unicode_CompareWithASCIIString(uni, str);
+    }
+    Py_ssize_t i;
+    int kind = ((PyASCIIObject *) uni)->state.kind;
+    const void *data = graalpy_str_data(uni);
+    Py_ssize_t len1 = ((PyASCIIObject *) uni)->length;
+    Py_UCS4 chr = 0;
+    if (kind == PyUnicode_1BYTE_KIND) {
+        size_t len, len2 = strlen(str);
+        int cmp;
+        len = Py_MIN((size_t) len1, len2);
+        cmp = memcmp(data, str, len);
+        if (cmp != 0) {
+            return cmp < 0 ? -1 : 1;
+        }
+        if ((size_t) len1 > len2)
+            return 1;
+        if ((size_t) len1 < len2)
+            return -1;
+        return 0;
+    }
+    for (i = 0; i < len1 && (chr = PyUnicode_READ(kind, data, i)) && str[i]; i++)
+        if (chr != (unsigned char)str[i])
+            return (chr < (unsigned char)(str[i])) ? -1 : 1;
+    if (len1 != i || (i < len1 && chr))
+        return 1;
+    if (str[i])
+        return -1;
+    return 0;
+}
+
+int
+PyUnicode_EqualToUTF8AndSize(PyObject *unicode, const char *str, Py_ssize_t size)
+{
+    if (!graalpy_str_is_native(unicode)) {
+        return GraalPyPrivate_Unicode_EqualToUTF8AndSize(unicode, str, size);
+    }
+    PyASCIIObject *a = (PyASCIIObject *) unicode;
+    Py_ssize_t len = a->length;
+    if (a->state.ascii) {
+        return size == len && memcmp(graalpy_str_data(unicode), str, len) == 0;
+    }
+    PyCompactUnicodeObject *c = (PyCompactUnicodeObject *) unicode;
+    if (c->utf8 != NULL) {
+        return size == c->utf8_length && memcmp(c->utf8, str, size) == 0;
+    }
+    if (size < 0 || (size_t)len >= (size_t)size || (size_t)len < (size_t)size / 4) {
+        return 0;
+    }
+    const unsigned char *s = (const unsigned char *)str;
+    const unsigned char *ends = s + (size_t)size;
+    int kind = a->state.kind;
+    const void *data = graalpy_str_data(unicode);
+    for (Py_ssize_t i = 0; i < len; i++) {
+        Py_UCS4 ch = PyUnicode_READ(kind, data, i);
+        if (ch < 0x80) {
+            if (ends == s || s[0] != ch) return 0;
+            s += 1;
+        } else if (ch < 0x800) {
+            if ((ends - s) < 2 || s[0] != (0xc0 | (ch >> 6)) || s[1] != (0x80 | (ch & 0x3f))) return 0;
+            s += 2;
+        } else if (ch < 0x10000) {
+            if (Py_UNICODE_IS_SURROGATE(ch) || (ends - s) < 3 || s[0] != (0xe0 | (ch >> 12)) ||
+                s[1] != (0x80 | ((ch >> 6) & 0x3f)) || s[2] != (0x80 | (ch & 0x3f))) return 0;
+            s += 3;
+        } else {
+            if ((ends - s) < 4 || s[0] != (0xf0 | (ch >> 18)) || s[1] != (0x80 | ((ch >> 12) & 0x3f)) ||
+                s[2] != (0x80 | ((ch >> 6) & 0x3f)) || s[3] != (0x80 | (ch & 0x3f))) return 0;
+            s += 4;
+        }
+    }
+    return s == ends;
+}
+
 int
 PyUnicode_EqualToUTF8(PyObject *unicode, const char *str)
 {
@@ -14707,6 +15397,30 @@ _PyUnicode_InternStatic(PyInterpreterState *interp, PyObject **p)
         return;
     }
 
+    // GraalPy change: interning a native str is answered from a C cache of interned
+    // objects (each entry owns a reference) when possible; only a miss asks the managed side
+    if (graalpy_str_is_native(s)) {
+        Py_hash_t h = graalpy_str_hash(s);
+        GraalPyInternEntry *e = &graalpy_intern_cache[(size_t) h & (GRAALPY_INTERN_CACHE - 1)];
+        if (e->obj != NULL && e->hash == h && graalpy_str_equal_any(e->obj, s)) {
+            Py_INCREF(e->obj);
+            *p = e->obj;
+            Py_DECREF(s);
+            return;
+        }
+        PyObject *t = GraalPyPrivate_Unicode_LookupAndIntern(s);
+        if (t == NULL) {
+            return;  /* keep s (not interned); the caller still owns it */
+        }
+        if (t != s) {
+            Py_INCREF(t);
+            Py_XSETREF(e->obj, t);
+            e->hash = h;
+            *p = t;
+        }
+        Py_DECREF(s);
+        return;
+    }
     PyObject *t = GraalPyPrivate_Unicode_LookupAndIntern(s);
 #if 0 // GraalPy change
     // This should only be called as part of runtime initialization

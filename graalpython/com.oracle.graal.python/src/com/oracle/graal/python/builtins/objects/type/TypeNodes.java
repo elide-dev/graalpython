@@ -2177,6 +2177,8 @@ public abstract class TypeNodes {
                 LoopNode.reportLoopCount(inliningTarget, ctx.copiedSlots.length);
             }
             pythonClass.setIndexedSlotCount(indexedSlotCount);
+            com.oracle.graal.python.runtime.nativeaccess.NativeInstance.maybeRegister(pythonClass, base, basesArray.length, indexedSlotCount, ctx.copiedSlots != null && ctx.copiedSlots.length > 0,
+                            ctx.addDict, ctx.addWeak);
 
             if (ctx.addDict) {
                 addDictDescrAttribute(basesArray, pythonClass, language);

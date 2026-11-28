@@ -387,8 +387,15 @@ public abstract class ObjectNodes {
             return getObjectIdNode.execute(inliningTarget, self);
         }
 
+        /** The struct pointer, equal for every in-flight copy (made native and pinned if needed). */
+        @Specialization
+        static Object id(PNativeLayoutObject self) {
+            return com.oracle.graal.python.runtime.nativeaccess.NativeInstance.identity(self);
+        }
+
         protected static boolean isDefaultCase(PythonObject object) {
-            return !(object instanceof PBytes ||
+            return !(object instanceof PNativeLayoutObject ||
+                            object instanceof PBytes ||
                             object instanceof PFrozenSet ||
                             object instanceof PTuple ||
                             object instanceof PInt ||
@@ -654,7 +661,7 @@ public abstract class ObjectNodes {
              *
              * See: typeobject.c:_PyObject_GetState
              */
-            return obj.getClass() == PythonObject.class;
+            return obj.getClass() == PythonObject.class || obj.getClass() == com.oracle.graal.python.builtins.objects.object.PNativeLayoutObject.class;
         }
     }
 

@@ -233,8 +233,9 @@ public abstract class ExternalFunctionNodes {
              * could be, e.g., Java primitive 'true' which will be promoted to an immortal object.
              */
             PythonContext ctx = PythonContext.get(this);
-            Object promoted = ensurePythonObjectNode.execute(ctx, object, false);
-            assert promoted == object || PythonToNativeInternalNode.isImmortal(ctx, promoted);
+            // A borrowed str must stay valid as long as its owner: stable stub
+            Object promoted = EnsurePythonObjectNode.promoteBorrowedString(ctx, ensurePythonObjectNode.execute(ctx, object, false));
+            assert promoted == object || object instanceof TruffleString || PythonToNativeInternalNode.isImmortal(ctx, promoted);
             return toNative.execute(promoted);
         }
 
@@ -253,7 +254,7 @@ public abstract class ExternalFunctionNodes {
 
         @TruffleBoundary(allowInlining = true)
         public static long executeUncached(Object object) {
-            Object promoted = EnsurePythonObjectNode.executeUncached(PythonContext.get(null), object, false);
+            Object promoted = EnsurePythonObjectNode.promoteBorrowedString(PythonContext.get(null), EnsurePythonObjectNode.executeUncached(PythonContext.get(null), object, false));
             return PythonToNativeInternalNode.executeUncached(promoted, false);
         }
     }
@@ -2332,7 +2333,21 @@ public abstract class ExternalFunctionNodes {
             for (int i = 0; i < n; i++) {
                 Object promoted = materializePrimitiveNode.execute(context, args[i], false);
                 args[i] = promoted;
-                writePtrArrayElement(obItem, i, pythonToNativeNode.executeNewRef(inliningTarget, promoted));
+                long elem = 0;
+                if (promoted instanceof TruffleString) {
+                    // One string passed twice in one call gets one native str
+                    for (int j = 0; j < i; j++) {
+                        if (args[j] == promoted) {
+                            elem = readPtrArrayElement(obItem, j);
+                            com.oracle.graal.python.runtime.nativeaccess.NativeStr.incref(elem);
+                            break;
+                        }
+                    }
+                }
+                if (elem == 0) {
+                    elem = pythonToNativeNode.executeNewRef(inliningTarget, promoted);
+                }
+                writePtrArrayElement(obItem, i, elem);
             }
 
             if (LOGGER.isLoggable(Level.FINE)) {
@@ -2436,10 +2451,26 @@ public abstract class ExternalFunctionNodes {
                             argsTuplePtr);
         }
 
+        /**
+         * Each element must still be the native representation of its managed argument: the same
+         * pointer (stubs, handles, tagged values, native objects), or, for an argument that crossed
+         * as a native value copy (str, int, float, complex), a struct of the same type and value.
+         * A copy is made per conversion, so it is not converted again here: that would make a new
+         * struct with a different address.
+         */
+        @TruffleBoundary
         private static boolean verifyElements(long op, Object[] managedArgs) {
             long obItem = CStructAccess.getFieldPtr(op, CFields.PyTupleObject__ob_item);
             for (int i = 0; i < managedArgs.length; i++) {
-                if (readPtrArrayElement(obItem, i) != PythonToNativeInternalNode.executeUncached(managedArgs[i], false)) {
+                long elem = readPtrArrayElement(obItem, i);
+                if (CApiTransitions.isNativeValueCopyOf(elem, managedArgs[i])) {
+                    // the tuple owns one reference to each element
+                    if (CApiTransitions.readNativeRefCount(elem) < 1) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (elem != PythonToNativeInternalNode.executeUncached(managedArgs[i], false)) {
                     return false;
                 }
             }

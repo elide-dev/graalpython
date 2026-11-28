@@ -571,7 +571,7 @@ public abstract class PythonCextObjectBuiltins {
                 if (value == PNone.NO_VALUE) {
                     return 0;
                 }
-                result = toNativeNode.executeNewRef(inliningTarget, ensureNode.execute(context, value, false));
+                result = toNativeNode.executeNewRef(inliningTarget, com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(context, ensureNode.execute(context, value, false)));
                 return 1;
             } finally {
                 writePtr(resultPointer, result);
@@ -598,7 +598,7 @@ public abstract class PythonCextObjectBuiltins {
                     result = ((BoundDescriptor) result).descriptor;
                 }
                 resultPointerValue = toNativeNode.executeNewRef(inliningTarget,
-                                ensureNode.execute(context, result, false));
+                                com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(context, ensureNode.execute(context, result, false)));
                 return isBound ? 0 : 1;
             } finally {
                 writePtr(resultPointer, resultPointerValue);
@@ -623,7 +623,7 @@ public abstract class PythonCextObjectBuiltins {
                 if (value == PNone.NO_VALUE) {
                     return 0;
                 }
-                result = toNativeNode.executeNewRef(inliningTarget, ensureNode.execute(context, value, false));
+                result = toNativeNode.executeNewRef(inliningTarget, com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(context, ensureNode.execute(context, value, false)));
                 return 1;
             } finally {
                 writePtr(resultPointer, result);
@@ -853,8 +853,9 @@ public abstract class PythonCextObjectBuiltins {
      * Moving this to pure C is much faster (100x) for true native tp_hash, but hashing managed
      * objects (e.g. Strings) regresses (also by ~100x).
      */
-    @CApiBuiltin(ret = Py_hash_t, args = {PyObject}, call = Direct, retConversion = long.class, argConversions = {NativeToPythonNode.class})
-    abstract static class PyObject_Hash extends CApiUnaryBuiltinNode {
+    // PyObject_Hash is in C (native strs hash there); this is its path for everything else
+    @CApiBuiltin(ret = Py_hash_t, args = {PyObject}, call = Ignored, retConversion = long.class, argConversions = {NativeToPythonNode.class})
+    abstract static class GraalPyPrivate_Object_Hash extends CApiUnaryBuiltinNode {
         @Specialization
         static long hash(Object object,
                         @Bind Node inliningTarget,

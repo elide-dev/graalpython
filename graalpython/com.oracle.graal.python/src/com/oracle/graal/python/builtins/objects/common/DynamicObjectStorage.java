@@ -313,12 +313,14 @@ public final class DynamicObjectStorage extends HashingStorage {
     void setStringKey(Node inliningTarget, TruffleString key, Object value, DynamicObject.PutNode putNode,
                     InlinedBranchProfile invalidateLengthProfile, DynamicObject.SetShapeFlagsNode setShapeFlagsNode) {
         invalidateLength(inliningTarget, value, invalidateLengthProfile, setShapeFlagsNode);
+        com.oracle.graal.python.runtime.nativeaccess.NativeInstance.pinIfNative(value, com.oracle.graal.python.runtime.nativeaccess.NativeInstance.C_PIN_DICT);
         putNode.execute(store, key, assertNoJavaString(value));
     }
 
     boolean setStringKeyIfPresent(Node inliningTarget, TruffleString key, Object value, DynamicObject.PutNode putNode,
                     InlinedBranchProfile invalidateLengthProfile, DynamicObject.SetShapeFlagsNode setShapeFlagsNode) {
         invalidateLength(inliningTarget, value, invalidateLengthProfile, setShapeFlagsNode);
+        com.oracle.graal.python.runtime.nativeaccess.NativeInstance.pinIfNative(value, com.oracle.graal.python.runtime.nativeaccess.NativeInstance.C_PIN_DICT);
         return putNode.executeIfPresent(store, key, assertNoJavaString(value));
     }
 

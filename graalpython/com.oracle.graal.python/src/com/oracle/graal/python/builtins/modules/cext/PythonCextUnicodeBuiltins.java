@@ -233,8 +233,9 @@ public final class PythonCextUnicodeBuiltins {
         }
     }
 
-    @CApiBuiltin(ret = PyObject, args = {ConstCharPtr}, call = Direct, retConversion = PythonToNativeNewRefNode.class, argConversions = {CharPtrToPythonStrictNode.class})
-    abstract static class PyUnicode_FromString extends CApiUnaryBuiltinNode {
+    // PyUnicode_FromString is implemented in C; this is its fallback for invalid UTF-8
+    @CApiBuiltin(ret = PyObject, args = {ConstCharPtr}, call = Ignored, retConversion = PythonToNativeNewRefNode.class, argConversions = {CharPtrToPythonStrictNode.class})
+    abstract static class GraalPyPrivate_Unicode_FromString extends CApiUnaryBuiltinNode {
         @Specialization
         static TruffleString fromString(TruffleString value) {
             return value;
@@ -262,7 +263,16 @@ public final class PythonCextUnicodeBuiltins {
                         @Cached StringBuiltins.StrNewNode strNode,
                         @SuppressWarnings("unused") @Shared @Cached GetClassNode getClassNode,
                         @SuppressWarnings("unused") @Shared @Cached IsSubtypeNode isSubtypeNode) {
-            return strNode.executeWith(obj);
+            Object result = strNode.executeWith(obj);
+            if (result instanceof TruffleString ts) {
+                /*
+                 * As in CPython, a str subclass instance gives a new exact str object. The bare
+                 * Java string may be the one another str object holds, and a bare string keeps its
+                 * identity across C (native str copies), so wrap it in a fresh object.
+                 */
+                return PFactory.createString(PythonLanguage.get(inliningTarget), ts);
+            }
+            return result;
         }
 
         @Specialization(guards = {"!isStringSubtype(inliningTarget, obj, getClassNode, isSubtypeNode)"})
@@ -360,6 +370,10 @@ public final class PythonCextUnicodeBuiltins {
         CApiTiming.enter();
         try {
             Object obj = NativeToPythonInternalNode.executeUncached(objPtr, false);
+            if (obj instanceof TruffleString ts) {
+                // A native str struct; the interned object is a (stable) PString stub
+                obj = PFactory.createString(PythonLanguage.get(null), ts);
+            }
             if (obj instanceof PString str) {
                 if (!PGuards.isBuiltinPString(str)) {
                     return NULLPTR;
@@ -640,8 +654,9 @@ public final class PythonCextUnicodeBuiltins {
 
     private static final CApiTiming TIMING_PYUNICODE_COMPAREWITHASCIISTRING = CApiTiming.create(false, "PyUnicode_CompareWithASCIIString");
 
-    @CApiBuiltin(ret = Int, args = {PyObject, ConstCharPtr}, call = Direct, retConversion = int.class, argConversions = {ToPythonStringNode.class, long.class})
-    public static int PyUnicode_CompareWithASCIIString(long uniPtr, long str) {
+    // PyUnicode_CompareWithASCIIString is in C; this handles non-native strings
+    @CApiBuiltin(ret = Int, args = {PyObject, ConstCharPtr}, call = Ignored, retConversion = int.class, argConversions = {ToPythonStringNode.class, long.class})
+    public static int GraalPyPrivate_Unicode_CompareWithASCIIString(long uniPtr, long str) {
         /*
          * This method cannot throw Python exceptions and doesn't need a GIL since both, the unicode
          * object and the ASCII string are assumed to be immutable.
@@ -688,8 +703,9 @@ public final class PythonCextUnicodeBuiltins {
         static final InvalidStringException INSTANCE = new InvalidStringException();
     }
 
-    @CApiBuiltin(ret = Int, args = {PyObject, ConstCharPtr, Py_ssize_t}, call = Direct, retConversion = int.class, argConversions = {ToPythonStringNode.class, long.class, long.class})
-    public static int PyUnicode_EqualToUTF8AndSize(long unicodePtr, long str, long size) {
+    // PyUnicode_EqualToUTF8AndSize is in C; this handles non-native strings
+    @CApiBuiltin(ret = Int, args = {PyObject, ConstCharPtr, Py_ssize_t}, call = Ignored, retConversion = int.class, argConversions = {ToPythonStringNode.class, long.class, long.class})
+    public static int GraalPyPrivate_Unicode_EqualToUTF8AndSize(long unicodePtr, long str, long size) {
         if (size < 0) {
             return 0;
         }
@@ -707,9 +723,10 @@ public final class PythonCextUnicodeBuiltins {
         }
     }
 
-    @CApiBuiltin(ret = Int, args = {PyObject, PyObject}, call = Direct, retConversion = int.class, argConversions = {NativeToPythonNode.class, NativeToPythonNode.class})
+    // PyUnicode_Compare is in C; this handles non-native strings
+    @CApiBuiltin(ret = Int, args = {PyObject, PyObject}, call = Ignored, retConversion = int.class, argConversions = {NativeToPythonNode.class, NativeToPythonNode.class})
     @ImportStatic(PythonCextUnicodeBuiltins.class)
-    abstract static class PyUnicode_Compare extends CApiBinaryBuiltinNode {
+    abstract static class GraalPyPrivate_Unicode_Compare extends CApiBinaryBuiltinNode {
 
         @Specialization(guards = {"isAnyString(inliningTarget, left, getClassNode, isSubtypeNode)", "isAnyString(inliningTarget, right, getClassNode, isSubtypeNode)"}, limit = "1")
         static Object compare(Object left, Object right,
@@ -890,6 +907,13 @@ public final class PythonCextUnicodeBuiltins {
                 throw raiseNode.raise(inliningTarget, IndexError, ErrorMessages.STRING_INDEX_OUT_OF_RANGE);
             }
         }
+    }
+
+    /* C gets the native str region once (unicodeobject.c, graalpy_init_str) */
+    @CApiBuiltin(ret = Pointer, call = Ignored, retConversion = long.class, argConversions = {})
+    @TruffleBoundary
+    static long GraalPyPrivate_Str_State() {
+        return PythonContext.get(null).getNativeComplexState() + com.oracle.graal.python.runtime.nativeaccess.NativeComplex.S_STR;
     }
 
     @CApiBuiltin(ret = PyObject, args = {Py_ssize_t, Int, Int}, call = Ignored, retConversion = PythonToNativeNode.class, argConversions = {long.class, int.class, int.class})

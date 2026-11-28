@@ -58,6 +58,16 @@ import com.oracle.truffle.api.nodes.Node;
 
 public final class PythonCextFloatBuiltins {
 
+    /*
+     * C gets the small-block pool region once at C API initialization (obmalloc.c,
+     * graalpy_init_small_alloc); the region is part of the shared native value state block (NativeComplex).
+     */
+    @CApiBuiltin(ret = com.oracle.graal.python.annotations.ArgDescriptor.Pointer, call = Ignored, retConversion = long.class, argConversions = {})
+    @com.oracle.truffle.api.CompilerDirectives.TruffleBoundary
+    static long GraalPyPrivate_Small_AllocState() {
+        return com.oracle.graal.python.runtime.PythonContext.get(null).getNativeComplexState() + com.oracle.graal.python.runtime.nativeaccess.NativeComplex.S_SMALL;
+    }
+
     @CApiBuiltin(ret = PyObject, args = {ArgDescriptor.Double}, call = Ignored, retConversion = PythonToNativeNewRefNode.class, argConversions = {double.class})
     abstract static class GraalPyPrivate_Float_FromDouble extends CApiUnaryBuiltinNode {
         @Specialization

@@ -1506,7 +1506,7 @@ public class CApiBuiltinsProcessor extends AbstractProcessor {
                 lines.add("    public static " + returnType + " invoke" + sig.name + "(" + String.join(", ", invokeArgs) + ") {");
                 String returnStmt = isVoidReturn ? "" : "return ";
                 lines.add("        CApiTiming.enter();");
-                lines.add("        com.oracle.graal.python.builtins.objects.cext.capi.CApiEpoch.javaRan();");
+                lines.add("        com.oracle.graal.python.runtime.nativeaccess.NativeComplex.enterDowncall();");
                 lines.add("        try {");
                 lines.add("            " + returnStmt + "invoke" + sig.name + "(" +
                                 "nativeFunction.getAddress()" +
@@ -1514,6 +1514,7 @@ public class CApiBuiltinsProcessor extends AbstractProcessor {
                 lines.add("        } catch (Throwable exception) {");
                 lines.add("            throw CompilerDirectives.shouldNotReachHere(exception);");
                 lines.add("        } finally {");
+                lines.add("            com.oracle.graal.python.runtime.nativeaccess.NativeComplex.exitDowncall();");
                 lines.add("            CApiTiming.exit(timing);");
                 lines.add("        }");
                 lines.add("    }");
@@ -1546,7 +1547,7 @@ public class CApiBuiltinsProcessor extends AbstractProcessor {
                 lines.add("");
                 lines.add("        Object state = BoundaryCallContext.enter(frame, threadState, boundaryCallData);");
                 lines.add("        CApiTiming.enter();");
-                lines.add("        com.oracle.graal.python.builtins.objects.cext.capi.CApiEpoch.javaRan();");
+                lines.add("        com.oracle.graal.python.runtime.nativeaccess.NativeComplex.enterDowncall();");
                 lines.add("        try {");
                 lines.add("            " + returnStmt + "invoke" + sig.name + "(" +
                                 "nativeFunction.getAddress()" +
@@ -1556,6 +1557,7 @@ public class CApiBuiltinsProcessor extends AbstractProcessor {
                 lines.add("            GilNode.uncachedAcquire();");
                 lines.add("            throw CompilerDirectives.shouldNotReachHere(exception);");
                 lines.add("        } finally {");
+                lines.add("            com.oracle.graal.python.runtime.nativeaccess.NativeComplex.exitDowncall();");
                 lines.add("            CApiTiming.exit(timing);");
                 lines.add("            if (frame != null && threadState.getCaughtException() != null) {");
                 lines.add("                PArguments.setException(frame, threadState.getCaughtException());");

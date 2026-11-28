@@ -1291,6 +1291,12 @@ public final class GraalPythonModuleBuiltins extends PythonBuiltins {
             return true;
         }
 
+        // In-flight value copy of an instance of a native float subtype (a struct on escape)
+        @Specialization
+        boolean isNative(@SuppressWarnings("unused") com.oracle.graal.python.builtins.objects.floats.PNativeFloat obj) {
+            return true;
+        }
+
         @Fallback
         boolean isNative(@SuppressWarnings("unused") Object obj) {
             return false;
@@ -1418,6 +1424,107 @@ public final class GraalPythonModuleBuiltins extends PythonBuiltins {
             getContext().interopTypeRegistry.clear();
             PolyglotModuleBuiltins.clearInteropTypeRegistryCache(getContext());
             return PNone.NONE;
+        }
+    }
+
+    @Builtin(name = "complex_counters", minNumOfPositionalArgs = 0, maxNumOfPositionalArgs = 1, doc = "Measurement only: ((name, count), ...) of native complex " +
+                    "allocator events plus ('live_blocks', n); pass True to reset. Needs -Dgraalpy.complexCounters=true, otherwise returns None.")
+    @GenerateNodeFactory
+    public abstract static class ComplexCountersNode extends PythonBuiltinNode {
+
+        @Specialization
+        @TruffleBoundary
+        Object get(Object reset) {
+            if (!com.oracle.graal.python.runtime.nativeaccess.NativeComplex.COUNTERS) {
+                return PNone.NONE;
+            }
+            long st = PythonContext.get(null).peekNativeComplexState();
+            long[] counts = com.oracle.graal.python.runtime.nativeaccess.NativeComplex.snapshot(st, reset == Boolean.TRUE);
+            String[] names = com.oracle.graal.python.runtime.nativeaccess.NativeComplex.COUNTER_NAMES;
+            Object[] result = new Object[counts.length + 1];
+            PythonLanguage language = PythonLanguage.get(null);
+            for (int i = 0; i < counts.length; i++) {
+                result[i] = PFactory.createTuple(language, new Object[]{toTruffleStringUncached(names[i]), counts[i]});
+            }
+            long live = st == 0 ? 0 : com.oracle.graal.python.runtime.nativeaccess.NativeComplex.liveBlocks(st);
+            result[counts.length] = PFactory.createTuple(language, new Object[]{toTruffleStringUncached("live_blocks"), live});
+            return PFactory.createTuple(language, result);
+        }
+    }
+
+    @Builtin(name = "native_str_stats", minNumOfPositionalArgs = 0, maxNumOfPositionalArgs = 0, doc = "Measurement only: ((name, value), ...): " +
+                    "live_stubs (occupied native stub table entries) and the native str counters (counts need -Dgraalpy.complexCounters=true).")
+    @GenerateNodeFactory
+    public abstract static class NativeStrStatsNode extends PythonBuiltinNode {
+
+        @Specialization
+        @TruffleBoundary
+        static Object get() {
+            PythonContext ctx = PythonContext.get(null);
+            long live = 0;
+            var lookup = ctx.handleContext == null ? null : ctx.handleContext.nativeStubLookup;
+            if (lookup != null) {
+                for (Object o : lookup) {
+                    if (o != null) {
+                        live++;
+                    }
+                }
+            }
+            long st = ctx.peekNativeComplexState();
+            long[] counts = com.oracle.graal.python.runtime.nativeaccess.NativeStr.snapshot(st, false);
+            String[] names = com.oracle.graal.python.runtime.nativeaccess.NativeStr.COUNTER_NAMES;
+            PythonLanguage language = PythonLanguage.get(null);
+            Object[] result = new Object[counts.length + 2];
+            result[0] = PFactory.createTuple(language, new Object[]{toTruffleStringUncached("live_stubs"), live});
+            result[1] = PFactory.createTuple(language, new Object[]{toTruffleStringUncached("str_enabled"), com.oracle.graal.python.runtime.nativeaccess.NativeStr.getStrType(st) != 0});
+            for (int i = 0; i < counts.length; i++) {
+                result[i + 2] = PFactory.createTuple(language, new Object[]{toTruffleStringUncached(names[i]), counts[i]});
+            }
+            return PFactory.createTuple(language, result);
+        }
+    }
+
+    @Builtin(name = "native_long_live", minNumOfPositionalArgs = 0, maxNumOfPositionalArgs = 0, doc = "Measurement only: number of native int structs " +
+                    "currently allocated by the shared allocator (0 before the C API is initialized).")
+    @GenerateNodeFactory
+    public abstract static class NativeLongLiveNode extends PythonBuiltinNode {
+
+        @Specialization
+        @TruffleBoundary
+        static long get() {
+            long st = PythonContext.get(null).peekNativeComplexState();
+            return st == 0 ? 0 : com.oracle.graal.python.runtime.nativeaccess.NativeLong.liveBlocks(st);
+        }
+    }
+
+    @Builtin(name = "native_quiesce", minNumOfPositionalArgs = 0, maxNumOfPositionalArgs = 0, doc = "quiescent point; frees recorded native instances whose count is zero " +
+                    "(recursively). Returns the number freed.")
+    @GenerateNodeFactory
+    public abstract static class NativeQuiesceNode extends PythonBuiltinNode {
+        @Specialization
+        Object quiesce() {
+            return com.oracle.graal.python.runtime.nativeaccess.NativeInstance.quiesce(getContext());
+        }
+    }
+
+    @Builtin(name = "slots_counters", minNumOfPositionalArgs = 0, maxNumOfPositionalArgs = 1, doc = "Measurement only: ((name, count), ...) of native instance events; " +
+                    "pass True to reset. Needs -Dgraalpy.slotsCounters=true, otherwise returns None.")
+    @GenerateNodeFactory
+    public abstract static class SlotsCountersNode extends PythonBuiltinNode {
+        @Specialization
+        @TruffleBoundary
+        Object get(Object reset) {
+            if (!com.oracle.graal.python.runtime.nativeaccess.NativeInstance.COUNTERS) {
+                return PNone.NONE;
+            }
+            long[] counts = com.oracle.graal.python.runtime.nativeaccess.NativeInstance.snapshot(reset == Boolean.TRUE);
+            String[] names = com.oracle.graal.python.runtime.nativeaccess.NativeInstance.COUNTER_NAMES;
+            Object[] result = new Object[counts.length];
+            PythonLanguage language = PythonLanguage.get(null);
+            for (int i = 0; i < counts.length; i++) {
+                result[i] = PFactory.createTuple(language, new Object[]{toTruffleStringUncached(names[i]), counts[i]});
+            }
+            return PFactory.createTuple(language, result);
         }
     }
 

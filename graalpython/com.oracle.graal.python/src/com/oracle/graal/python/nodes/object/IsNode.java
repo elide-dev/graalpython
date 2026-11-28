@@ -256,6 +256,47 @@ public abstract class IsNode extends Node implements BinaryOp {
         return PGuards.isBuiltinPString(left) && PGuards.isBuiltinPString(right) && left.isMaterialized() && right.isMaterialized() && left.getMaterialized() == right.getMaterialized();
     }
 
+    /**
+     * Two in-flight exact complex values are the same object if they were taken from
+     * the same native struct incarnation (same pointer and serial). {@code id()} is not changed.
+     */
+    @Specialization
+    public static boolean doComplex(com.oracle.graal.python.builtins.objects.complex.PComplex left, com.oracle.graal.python.builtins.objects.complex.PComplex right) {
+        if (left == right) {
+            return true;
+        }
+        long p = left.getNativePtr();
+        return p != 0 && left.isExact() && right.isExact() && p == right.getNativePtr() && left.getSerial() == right.getSerial();
+    }
+
+    /**
+     * Two in-flight references to native-layout instances are the same object if
+     * they refer to the same struct.
+     */
+    @Specialization
+    public static boolean doNativeLayout(com.oracle.graal.python.builtins.objects.object.PNativeLayoutObject left, com.oracle.graal.python.builtins.objects.object.PNativeLayoutObject right) {
+        if (left == right) {
+            return true;
+        }
+        long p = left.getSlotsPtr();
+        return p != 0 && p == right.getSlotsPtr();
+    }
+
+    /**
+     * Two in-flight value copies of a value-type native float subclass instance are the
+     * same object if they come from (or went to) the same struct incarnation (pointer and pool generation)
+     * and have the same class and bits.
+     */
+    @Specialization
+    public static boolean doNativeFloat(com.oracle.graal.python.builtins.objects.floats.PNativeFloat left, com.oracle.graal.python.builtins.objects.floats.PNativeFloat right) {
+        if (left == right) {
+            return true;
+        }
+        long p = left.getStructHint();
+        return p != 0 && p == right.getStructHint() && left.getStructGen() == right.getStructGen() && left.getPythonClass() == right.getPythonClass() &&
+                        Double.doubleToRawLongBits(left.getValue()) == Double.doubleToRawLongBits(right.getValue());
+    }
+
     // everything else
     @Fallback
     @InliningCutoff

@@ -51,6 +51,7 @@ import com.oracle.graal.python.runtime.sequence.storage.ArrayBasedSequenceStorag
 import com.oracle.graal.python.runtime.sequence.storage.BoolSequenceStorage;
 import com.oracle.graal.python.runtime.sequence.storage.DoubleSequenceStorage;
 import com.oracle.graal.python.runtime.sequence.storage.EmptySequenceStorage;
+import com.oracle.graal.python.runtime.sequence.storage.InstPtrSequenceStorage;
 import com.oracle.graal.python.runtime.sequence.storage.IntSequenceStorage;
 import com.oracle.graal.python.runtime.sequence.storage.LongSequenceStorage;
 import com.oracle.graal.python.runtime.sequence.storage.ObjectSequenceStorage;
@@ -126,6 +127,22 @@ abstract class SequenceFromArrayNode extends Node {
                         storage = new ObjectSequenceStorage(objectElements, length);
                         break;
                     }
+                    case InstPtr: {
+                        // Only list sites get this type
+                        if (length == 0) {
+                            storage = EmptySequenceStorage.INSTANCE;
+                            break;
+                        }
+                        storage = InstPtrSequenceStorage.tryCreate(objectElements, length, getCapacityEstimate(length));
+                        if (storage == null) {
+                            throw SLOW_PATH_EXCEPTION;
+                        }
+                        break;
+                    }
+                    case ComplexPtr:
+                        // literals are never built as pointer storage; the type can come from
+                        // reportUpdatedCapacity (append of a complex to a literal list)
+                        throw SLOW_PATH_EXCEPTION;
                     default:
                         CompilerDirectives.transferToInterpreterAndInvalidate();
                         throw new RuntimeException("unexpected state");
@@ -143,7 +160,7 @@ abstract class SequenceFromArrayNode extends Node {
     private SequenceStorage initialize(Object[] objectElements) {
         SequenceStorage storage;
         try {
-            storage = SequenceStorageFactory.createStorage(this, objectElements);
+            storage = createInitialStorage(objectElements);
             type = storage.getElementType();
         } catch (Throwable t) {
             // we do not want to repeatedly deopt if a value execution
@@ -184,12 +201,16 @@ abstract class SequenceFromArrayNode extends Node {
 
     protected abstract int getCapacityEstimate(int length);
 
+    protected SequenceStorage createInitialStorage(Object[] objectElements) {
+        return SequenceStorageFactory.createStorage(this, objectElements);
+    }
+
     public abstract static class ListFromArrayNode extends SequenceFromArrayNode implements ListOrigin {
         private static final TruffleLogger LOGGER = PythonLanguage.getLogger(ListFromArrayNode.class);
         private static final ListFromArrayNode UNCACHED = new ListFromArrayNode() {
             @Override
             public PList execute(PythonLanguage language, Object[] elements) {
-                return PFactory.createList(language, SequenceStorageFactory.createStorage(this, elements));
+                return PFactory.createList(language, SequenceStorageFactory.createListStorage(this, elements));
             }
         };
 
@@ -200,6 +221,11 @@ abstract class SequenceFromArrayNode extends Node {
         @CompilationFinal private SizeEstimate initialCapacity;
 
         public abstract PList execute(PythonLanguage language, Object[] elements);
+
+        @Override
+        protected SequenceStorage createInitialStorage(Object[] objectElements) {
+            return SequenceStorageFactory.createListStorage(this, objectElements);
+        }
 
         @Specialization
         PList doIt(PythonLanguage language, Object[] elements,

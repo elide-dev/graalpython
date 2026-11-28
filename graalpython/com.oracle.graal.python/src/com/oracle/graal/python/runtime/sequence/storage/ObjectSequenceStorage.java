@@ -43,6 +43,7 @@ public final class ObjectSequenceStorage extends ArrayBasedSequenceStorage {
     }
 
     public ObjectSequenceStorage(Object[] elements) {
+        com.oracle.graal.python.runtime.nativeaccess.NativeInstance.pinArray(elements, 0, elements.length);
         this.values = elements;
         this.capacity = elements.length;
         this.length = elements.length;
@@ -50,6 +51,7 @@ public final class ObjectSequenceStorage extends ArrayBasedSequenceStorage {
     }
 
     public ObjectSequenceStorage(Object[] elements, int length) {
+        com.oracle.graal.python.runtime.nativeaccess.NativeInstance.pinArray(elements, 0, length);
         this.values = elements;
         this.capacity = elements.length;
         this.length = length;
@@ -81,6 +83,7 @@ public final class ObjectSequenceStorage extends ArrayBasedSequenceStorage {
     }
 
     public void setObjectItemNormalized(int idx, Object value) {
+        com.oracle.graal.python.runtime.nativeaccess.NativeInstance.pinIfNative(value);
         values[idx] = assertNoJavaString(value);
     }
 
@@ -98,6 +101,7 @@ public final class ObjectSequenceStorage extends ArrayBasedSequenceStorage {
     }
 
     public void insertItem(int idx, Object value) {
+        com.oracle.graal.python.runtime.nativeaccess.NativeInstance.pinIfNative(value);
         ensureCapacity(length + 1);
 
         // shifting tail to the right by one slot
@@ -110,6 +114,7 @@ public final class ObjectSequenceStorage extends ArrayBasedSequenceStorage {
     }
 
     public void appendItem(Object value) {
+        com.oracle.graal.python.runtime.nativeaccess.NativeInstance.pinIfNative(value);
         ensureCapacity(length + 1);
         values[length] = assertNoJavaString(value);
         incLength();

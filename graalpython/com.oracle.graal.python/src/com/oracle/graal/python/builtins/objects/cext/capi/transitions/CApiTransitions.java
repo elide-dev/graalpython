@@ -133,6 +133,7 @@ import com.oracle.graal.python.runtime.PythonContext.PythonThreadState;
 import com.oracle.graal.python.runtime.PythonOptions;
 import com.oracle.graal.python.runtime.nativeaccess.NativeMemory;
 import com.oracle.graal.python.runtime.object.PFactory;
+import com.oracle.truffle.api.object.Shape;
 import com.oracle.graal.python.runtime.sequence.storage.NativeSequenceStorage;
 import com.oracle.graal.python.runtime.sequence.storage.SequenceStorage;
 import com.oracle.graal.python.runtime.sequence.storage.SequenceStorage.StorageType;
@@ -1864,6 +1865,47 @@ public abstract class CApiTransitions {
         }
     }
 
+    /**
+     * For assertions: whether {@code pointer} is a native value copy (a str, int, float or complex
+     * struct made by {@link PythonToNativeInternalNode}) that stands for {@code value}. A value copy
+     * is made per conversion, so converting {@code value} again gives a different struct; this
+     * compares the type and the value the struct holds instead of the pointer. Returns false for
+     * anything that is not such a struct (handles, stubs, other native objects).
+     */
+    @TruffleBoundary
+    public static boolean isNativeValueCopyOf(long pointer, Object value) {
+        if (pointer == 0 || HandlePointerConverter.pointsToPyHandleSpace(pointer)) {
+            return false;
+        }
+        PythonContext context = PythonContext.get(null);
+        long st = context.peekNativeComplexState();
+        if (st == 0) {
+            return false;
+        }
+        if (com.oracle.graal.python.runtime.nativeaccess.NativeStr.isNativeStr(st, pointer)) {
+            return value instanceof TruffleString s && com.oracle.graal.python.runtime.nativeaccess.NativeStr.contentEquals(pointer, s);
+        }
+        if (com.oracle.graal.python.runtime.nativeaccess.NativeLong.isNativeLong(st, pointer)) {
+            return value instanceof Long l && com.oracle.graal.python.runtime.nativeaccess.NativeLong.fromNative(context.getLanguage(), st, pointer, false) instanceof Long v && v.longValue() == l;
+        }
+        if (com.oracle.graal.python.runtime.nativeaccess.NativeSmall.isNativeFloat(st, pointer)) {
+            return value instanceof Double d &&
+                            Double.doubleToRawLongBits(com.oracle.graal.python.runtime.nativeaccess.NativeSmall.floatFromNative(st, pointer, false)) == Double.doubleToRawLongBits(d);
+        }
+        if (com.oracle.graal.python.runtime.nativeaccess.NativeComplex.isNativeComplex(st, pointer)) {
+            return value instanceof com.oracle.graal.python.builtins.objects.complex.PComplex c && c.isExact() &&
+                            Double.doubleToRawLongBits(com.oracle.graal.python.runtime.nativeaccess.NativeComplex.readReal(pointer)) == Double.doubleToRawLongBits(c.getReal()) &&
+                            Double.doubleToRawLongBits(com.oracle.graal.python.runtime.nativeaccess.NativeComplex.readImag(pointer)) == Double.doubleToRawLongBits(c.getImag());
+        }
+        if (value instanceof com.oracle.graal.python.builtins.objects.floats.PNativeFloat f) {
+            // a value-type native float subclass instance: same type, same bits
+            long type = PythonToNativeInternalNode.executeUncached(GetClassNode.executeUncached(f), false);
+            return NativeMemory.readLong(pointer + 8) == type &&
+                            Double.doubleToRawLongBits(com.oracle.graal.python.runtime.nativeaccess.NativeSmall.floatFromNative(st, pointer, false)) == Double.doubleToRawLongBits(f.getValue());
+        }
+        return false;
+    }
+
     @GenerateUncached
     @GenerateInline
     @GenerateCached(false)
@@ -1905,6 +1947,16 @@ public abstract class CApiTransitions {
             return HandlePointerConverter.intToPointer(l.intValue());
         }
 
+        /**
+         * An int that does not fit the tagged pointer is passed as a native
+         * {@code PyLongObject} struct (no Java companion, no stub, no handle).
+         */
+        @Specialization(guards = "!fitsInInt(l)")
+        static long doLongNative(Node inliningTarget, Long l, boolean needsTransfer) {
+            CompilerAsserts.partialEvaluationConstant(needsTransfer);
+            return com.oracle.graal.python.runtime.nativeaccess.NativeLong.toNative(PythonContext.get(inliningTarget).getNativeComplexState(), l, needsTransfer);
+        }
+
         @Specialization
         static long doFloat(Float f, @SuppressWarnings("unused") boolean needsTransfer) {
             return HandlePointerConverter.floatToPointer(f);
@@ -1919,8 +1971,71 @@ public abstract class CApiTransitions {
             return HandlePointerConverter.floatToPointer(d.floatValue());
         }
 
+        /**
+         * A double that does not fit the tagged pointer is passed as a native
+         * {@code PyFloatObject} struct (no Java companion, no stub, no handle).
+         */
+        @Specialization(guards = "!fitsInFloat(d)")
+        static long doDoubleNative(Node inliningTarget, Double d, boolean needsTransfer) {
+            CompilerAsserts.partialEvaluationConstant(needsTransfer);
+            return doubleToNative(PythonContext.get(inliningTarget), d, needsTransfer);
+        }
+
+        static long doubleToNative(PythonContext context, double d, boolean needsTransfer) {
+            long st = context.getNativeComplexState();
+            if (CompilerDirectives.injectBranchProbability(CompilerDirectives.SLOWPATH_PROBABILITY, com.oracle.graal.python.runtime.nativeaccess.NativeSmall.getFloatType(st) == 0)) {
+                return doubleToNativeBeforeInit(d, needsTransfer);
+            }
+            return com.oracle.graal.python.runtime.nativeaccess.NativeSmall.floatToNative(st, d, needsTransfer);
+        }
+
+        /** Before the C API is initialized: the stub path (a PFloat with a stub; the count is C's). */
+        @TruffleBoundary
+        private static long doubleToNativeBeforeInit(double d, boolean needsTransfer) {
+            return executeUncached(PFactory.createFloat(PythonLanguage.get(null), d), true);
+        }
+
+        static boolean isNativeFloat(Object o) {
+            return o instanceof com.oracle.graal.python.builtins.objects.floats.PNativeFloat;
+        }
+
+        /** In-flight value copy of a value-type native float subclass instance. */
+        @Specialization
+        static long doNativeFloatValue(Node inliningTarget, com.oracle.graal.python.builtins.objects.floats.PNativeFloat f, boolean needsTransfer) {
+            CompilerAsserts.partialEvaluationConstant(needsTransfer);
+            long typePtr = ((PythonAbstractNativeObject) f.getPythonClass()).getPtr();
+            return com.oracle.graal.python.runtime.nativeaccess.NativeSmall.valueToNative(PythonContext.get(inliningTarget).getNativeComplexState(), f, typePtr, needsTransfer);
+        }
+
         public static boolean mapsToNull(Object obj) {
             return PNone.NO_VALUE == obj || DescriptorDeleteMarker.INSTANCE == obj;
+        }
+
+        /**
+         * An exact str that is a bare Java string crosses as a native str struct (no
+         * wrapper, no stub, no handle). Callers that need a stable pointer (borrowed items of
+         * containers) promote it to a PString first.
+         */
+        @Specialization
+        static long doString(Node inliningTarget, TruffleString s, boolean needsTransfer,
+                        @Exclusive @Cached NativeStrNodes.StrToNativeNode strToNativeNode) {
+            CompilerAsserts.partialEvaluationConstant(needsTransfer);
+            return stringToNative(inliningTarget, s, needsTransfer, strToNativeNode);
+        }
+
+        static long stringToNative(Node inliningTarget, TruffleString s, boolean needsTransfer, NativeStrNodes.StrToNativeNode strToNativeNode) {
+            PythonContext context = PythonContext.get(inliningTarget);
+            long st = context.getNativeComplexState();
+            if (CompilerDirectives.injectBranchProbability(CompilerDirectives.SLOWPATH_PROBABILITY, com.oracle.graal.python.runtime.nativeaccess.NativeStr.getStrType(st) == 0)) {
+                return stringToNativeOff(s);
+            }
+            return strToNativeNode.execute(inliningTarget, st, s, needsTransfer);
+        }
+
+        /** Scheme off (or C not initialized): a PString with a stub whose count is owned by C. */
+        @TruffleBoundary
+        private static long stringToNativeOff(TruffleString s) {
+            return executeUncached(PFactory.createString(PythonLanguage.get(null), s), true);
         }
 
         @Specialization(guards = "mapsToNull(obj)")
@@ -1970,7 +2085,16 @@ public abstract class CApiTransitions {
             return pointer;
         }
 
-        @Specialization
+        /**
+         * An exact complex is passed as its native struct (no stub, no handle).
+         */
+        @Specialization(guards = "c.isExact()")
+        static long doExactComplex(Node inliningTarget, com.oracle.graal.python.builtins.objects.complex.PComplex c, boolean needsTransfer) {
+            CompilerAsserts.partialEvaluationConstant(needsTransfer);
+            return com.oracle.graal.python.runtime.nativeaccess.NativeComplex.toNative(PythonContext.get(inliningTarget).getNativeComplexState(), c, needsTransfer);
+        }
+
+        @Specialization(guards = {"!isExactComplex(pythonObject)", "!isNativeFloat(pythonObject)"})
         static long doPythonObject(Node inliningTarget, PythonObject pythonObject, boolean needsTransfer,
                         @Exclusive @Cached FirstToNativeNode firstToNativeNode,
                         @Exclusive @Cached UpdateStrongRefNode updateRefNode) {
@@ -2005,9 +2129,14 @@ public abstract class CApiTransitions {
             return pointer;
         }
 
-        @Specialization(replaces = {"doNative", "doNullValues", "doPythonObject"})
+        static boolean isExactComplex(Object o) {
+            return o instanceof com.oracle.graal.python.builtins.objects.complex.PComplex c && c.isExact();
+        }
+
+        @Specialization(replaces = {"doNative", "doNullValues", "doPythonObject", "doExactComplex", "doLongNative", "doDoubleNative", "doNativeFloatValue", "doString"})
         static long doGeneric(Node inliningTarget, Object obj, boolean needsTransfer,
                         @Cached InlinedExactClassProfile classProfile,
+                        @Exclusive @Cached NativeStrNodes.StrToNativeNode strToNativeNode,
                         @Exclusive @Cached InlinedBranchProfile hasReplicatedNativeReferences,
                         @Exclusive @Cached FirstToNativeNode firstToNativeNode,
                         @Exclusive @Cached UpdateStrongRefNode updateRefNode) {
@@ -2023,15 +2152,36 @@ public abstract class CApiTransitions {
                 return HandlePointerConverter.intToPointer(i);
             } else if (profiled instanceof Long l && PInt.fitsInInt(l)) {
                 return HandlePointerConverter.intToPointer(l.intValue());
+            } else if (profiled instanceof Long l) {
+                // Native PyLongObject struct
+                return com.oracle.graal.python.runtime.nativeaccess.NativeLong.toNative(context.getNativeComplexState(), l, needsTransfer);
             } else if (profiled instanceof Float f) {
                 return HandlePointerConverter.floatToPointer(f);
             } else if (profiled instanceof Double d && PFloat.fitsInFloat(d)) {
                 return HandlePointerConverter.floatToPointer(d.floatValue());
+            } else if (profiled instanceof Double d) {
+                // Native PyFloatObject struct
+                return doubleToNative(context, d, needsTransfer);
             }
 
             // Step 2: handle values that map to NULL
             if (mapsToNull(profiled)) {
                 return 0;
+            }
+
+            // Bare Java string -> native str struct
+            if (profiled instanceof TruffleString s) {
+                return stringToNative(inliningTarget, s, needsTransfer, strToNativeNode);
+            }
+
+            // Exact complex -> native struct
+            if (profiled instanceof com.oracle.graal.python.builtins.objects.complex.PComplex c && c.isExact()) {
+                return com.oracle.graal.python.runtime.nativeaccess.NativeComplex.toNative(context.getNativeComplexState(), c, needsTransfer);
+            }
+
+            // Value copy of a value-type native float subclass instance -> struct
+            if (profiled instanceof com.oracle.graal.python.builtins.objects.floats.PNativeFloat f) {
+                return doNativeFloatValue(inliningTarget, f, needsTransfer);
             }
 
             // Step 3: handle native objects
@@ -2239,6 +2389,12 @@ public abstract class CApiTransitions {
                         @Cached InlinedConditionProfile isNativeProfile,
                         @Cached InlinedConditionProfile isNativeObjectProfile,
                         @Cached InlinedConditionProfile isHandleSpaceProfile,
+                        @Cached InlinedConditionProfile isNativeComplexProfile,
+                        @Cached InlinedConditionProfile isNativeLongProfile,
+                        @Cached InlinedConditionProfile isNativeFloatProfile,
+                        @Cached InlinedConditionProfile isNativeStrProfile,
+                        @Cached NativeStrNodes.NativeToStrNode nativeToStrNode,
+                        @Cached(inline = false) NativeFloatValueNode floatValueNode,
                         @Exclusive @Cached InlinedExactClassProfile wrapperProfile,
                         @Exclusive @Cached UpdateStrongRefNode updateRefNode) {
             if (isZeroProfile.profile(inliningTarget, pointer == 0)) {
@@ -2286,6 +2442,30 @@ public abstract class CApiTransitions {
                     throw CompilerDirectives.shouldNotReachHere("reference was collected: " + Long.toHexString(pointer));
                 }
             } else {
+                // An exact native complex struct becomes an in-flight PComplex directly
+                long complexState = pythonContext.peekNativeComplexState();
+                if (isNativeLongProfile.profile(inliningTarget, complexState != 0 && com.oracle.graal.python.runtime.nativeaccess.NativeLong.isNativeLong(complexState, pointer))) {
+                    // An exact native int struct becomes a Java value
+                    return com.oracle.graal.python.runtime.nativeaccess.NativeLong.fromNative(pythonContext.getLanguage(), complexState, pointer, needsTransfer);
+                }
+                if (isNativeComplexProfile.profile(inliningTarget, complexState != 0 && com.oracle.graal.python.runtime.nativeaccess.NativeComplex.isNativeComplex(complexState, pointer))) {
+                    return com.oracle.graal.python.runtime.nativeaccess.NativeComplex.fromNative(pythonContext.getLanguage(), complexState, pointer, needsTransfer);
+                }
+                if (complexState != 0) {
+                    // Exact float struct -> Java double; value-type float subclass -> value copy
+                    long obType = UNSAFE.getLong(pointer + 8);
+                    if (isNativeFloatProfile.profile(inliningTarget, obType == com.oracle.graal.python.runtime.nativeaccess.NativeSmall.getFloatType(complexState) && obType != 0)) {
+                        return com.oracle.graal.python.runtime.nativeaccess.NativeSmall.floatFromNative(complexState, pointer, needsTransfer);
+                    }
+                    // Native str struct -> Java string
+                    if (isNativeStrProfile.profile(inliningTarget, com.oracle.graal.python.runtime.nativeaccess.NativeStr.isNativeStr(complexState, pointer, obType))) {
+                        return nativeToStrNode.execute(inliningTarget, pointer, needsTransfer);
+                    }
+                    Object value = floatValueNode.execute(complexState, pointer, obType, needsTransfer);
+                    if (value != null) {
+                        return value;
+                    }
+                }
                 IdReference<?> lookup = nativeLookupGet(handleContext, pointer);
                 PythonThreadState threadState = pythonContext.getThreadState(pythonContext.getLanguage());
                 if (isNativeProfile.profile(inliningTarget, lookup != null)) {
@@ -2339,6 +2519,92 @@ public abstract class CApiTransitions {
                 updateRefNode.execute(node, pythonObject, pythonObject.decRef(), release);
             }
             return object;
+        }
+    }
+
+    /**
+     * Per-type verdict of {@code NativeSmall.isFloatValueType}. Only static types qualify, so
+     * a verdict stays valid while the extension is loaded.
+     */
+    public static final class NativeFloatValueTypes {
+        private static final java.util.HashMap<Long, Boolean> VERDICTS = new java.util.HashMap<>();
+
+        private NativeFloatValueTypes() {
+        }
+
+        @TruffleBoundary
+        public static boolean isValueType(long st, long typePtr) {
+            synchronized (VERDICTS) {
+                Boolean v = VERDICTS.get(typePtr);
+                if (v == null) {
+                    v = com.oracle.graal.python.runtime.nativeaccess.NativeSmall.isFloatValueType(st, typePtr);
+                    VERDICTS.put(typePtr, v);
+                }
+                return v;
+            }
+        }
+    }
+
+    /**
+     * A non-handle pointer whose type is a value-type native float subclass becomes an
+     * in-flight {@link com.oracle.graal.python.builtins.objects.floats.PNativeFloat} (value copy,
+     * no weak reference, no lookup-table entry); with {@code transfer} C's count is dropped (the
+     * struct is freed at zero). Returns {@code null} for any other type.
+     */
+    @GenerateUncached
+    @GenerateInline(false)
+    public abstract static class NativeFloatValueNode extends PNodeWithContext {
+
+        public abstract Object execute(long st, long pointer, long typePtr, boolean transfer);
+
+        @Specialization(guards = {"isSingleContext()", "typePtr == cachedType"}, limit = "3")
+        static Object doCached(long st, long pointer, @SuppressWarnings("unused") long typePtr, boolean transfer,
+                        @SuppressWarnings("unused") @Cached("typePtr") long cachedType,
+                        @Cached("isValue(st, typePtr)") boolean isValue,
+                        @Cached("lookupClass(isValue, typePtr)") Object cls,
+                        @Cached("lookupShape(isValue, cls)") Shape shape) {
+            if (!isValue) {
+                return null;
+            }
+            return make(st, pointer, cls, shape, transfer);
+        }
+
+        @Specialization(replaces = "doCached")
+        static Object doGeneric(long st, long pointer, long typePtr, boolean transfer) {
+            if (!NativeFloatValueTypes.isValueType(st, typePtr)) {
+                return null;
+            }
+            Object cls = lookupClass(true, typePtr);
+            return make(st, pointer, cls, lookupShape(true, cls), transfer);
+        }
+
+        static boolean isValue(long st, long typePtr) {
+            return NativeFloatValueTypes.isValueType(st, typePtr);
+        }
+
+        @TruffleBoundary
+        static Object lookupClass(boolean isValue, long typePtr) {
+            return isValue ? NativeToPythonClassInternalNode.executeUncached(typePtr) : null;
+        }
+
+        @TruffleBoundary
+        static Shape lookupShape(boolean isValue, Object cls) {
+            return isValue ? TypeNodes.GetInstanceShape.executeUncached(cls) : null;
+        }
+
+        private static Object make(long st, long pointer, Object cls, Shape shape, boolean transfer) {
+            // the pointer is kept as a reuse hint only for pool blocks (always readable, even when freed)
+            boolean pool = com.oracle.graal.python.runtime.nativeaccess.NativeSmall.isPool(pointer);
+            double d = com.oracle.graal.python.runtime.nativeaccess.NativeSmall.floatFromNative(st, pointer, transfer && !pool);
+            if (transfer && pool) {
+                /*
+                 * The count C gave us is dropped when the next outermost downcall returns (borrowed
+                 * stack), so a value passed straight back to C reuses this struct.
+                 */
+                com.oracle.graal.python.runtime.nativeaccess.NativeSmall.deferRelease(st, pointer);
+            }
+            return new com.oracle.graal.python.builtins.objects.floats.PNativeFloat(cls, shape, d, pool ? pointer : 0,
+                            pool ? com.oracle.graal.python.runtime.nativeaccess.NativeSmall.generation(pointer) : 0);
         }
     }
 
@@ -2435,6 +2701,12 @@ public abstract class CApiTransitions {
                         @Cached InlinedConditionProfile isNativeProfile,
                         @Cached InlinedConditionProfile isNativeObjectProfile,
                         @Cached InlinedConditionProfile isHandleSpaceProfile,
+                        @Cached InlinedConditionProfile isNativeComplexProfile,
+                        @Cached InlinedConditionProfile isNativeLongProfile,
+                        @Cached InlinedConditionProfile isNativeFloatProfile,
+                        @Cached InlinedConditionProfile isNativeStrProfile,
+                        @Cached NativeStrNodes.NativeToStrNode nativeToStrNode,
+                        @Cached(inline = false) NativeFloatValueNode floatValueNode,
                         @Cached InlinedExactClassProfile wrapperProfile,
                         @Cached UpdateStrongRefNode updateRefNode) {
 
@@ -2471,6 +2743,30 @@ public abstract class CApiTransitions {
                     throw CompilerDirectives.shouldNotReachHere("reference was collected: " + Long.toHexString(pointer));
                 }
             } else {
+                // An exact native complex struct becomes an in-flight PComplex directly
+                long complexState = pythonContext.peekNativeComplexState();
+                if (isNativeLongProfile.profile(inliningTarget, complexState != 0 && com.oracle.graal.python.runtime.nativeaccess.NativeLong.isNativeLong(complexState, pointer))) {
+                    // An exact native int struct becomes a Java value
+                    return com.oracle.graal.python.runtime.nativeaccess.NativeLong.fromNative(pythonContext.getLanguage(), complexState, pointer, stealing);
+                }
+                if (isNativeComplexProfile.profile(inliningTarget, complexState != 0 && com.oracle.graal.python.runtime.nativeaccess.NativeComplex.isNativeComplex(complexState, pointer))) {
+                    return com.oracle.graal.python.runtime.nativeaccess.NativeComplex.fromNative(pythonContext.getLanguage(), complexState, pointer, stealing);
+                }
+                if (complexState != 0) {
+                    // Exact float struct -> Java double; value-type float subclass -> value copy
+                    long obType = UNSAFE.getLong(pointer + 8);
+                    if (isNativeFloatProfile.profile(inliningTarget, obType == com.oracle.graal.python.runtime.nativeaccess.NativeSmall.getFloatType(complexState) && obType != 0)) {
+                        return com.oracle.graal.python.runtime.nativeaccess.NativeSmall.floatFromNative(complexState, pointer, stealing);
+                    }
+                    // Native str struct -> Java string
+                    if (isNativeStrProfile.profile(inliningTarget, com.oracle.graal.python.runtime.nativeaccess.NativeStr.isNativeStr(complexState, pointer, obType))) {
+                        return nativeToStrNode.execute(inliningTarget, pointer, stealing);
+                    }
+                    Object value = floatValueNode.execute(complexState, pointer, obType, stealing);
+                    if (value != null) {
+                        return value;
+                    }
+                }
                 IdReference<?> lookup = nativeLookupGet(handleContext, pointer);
                 PythonThreadState threadState = pythonContext.getThreadState(pythonContext.getLanguage());
                 if (isNativeProfile.profile(inliningTarget, lookup != null)) {

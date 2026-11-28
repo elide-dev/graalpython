@@ -127,6 +127,13 @@ import com.oracle.graal.python.runtime.sequence.PSequence;
 import com.oracle.graal.python.runtime.sequence.storage.ArrayBasedSequenceStorage;
 import com.oracle.graal.python.runtime.sequence.storage.BoolSequenceStorage;
 import com.oracle.graal.python.runtime.sequence.storage.ByteSequenceStorage;
+import com.oracle.graal.python.runtime.sequence.storage.ComplexPtrSequenceStorage;
+import com.oracle.graal.python.runtime.sequence.storage.InstPtrSequenceStorage;
+import com.oracle.graal.python.runtime.nativeaccess.NativeInstance;
+import com.oracle.graal.python.runtime.nativeaccess.NativeSlotNodes;
+import com.oracle.graal.python.builtins.objects.complex.PComplex;
+import com.oracle.graal.python.runtime.nativeaccess.NativeComplex;
+import org.graalvm.nativeimage.ImageInfo;
 import com.oracle.graal.python.runtime.sequence.storage.DoubleSequenceStorage;
 import com.oracle.graal.python.runtime.sequence.storage.EmptySequenceStorage;
 import com.oracle.graal.python.runtime.sequence.storage.ForeignSequenceStorage;
@@ -284,6 +291,10 @@ public abstract class SequenceStorageNodes {
                     return rhsType == Double || rhsType == Uninitialized || rhsType == Empty;
                 case Generic:
                     return true;
+                case ComplexPtr:
+                    return rhsType == StorageType.ComplexPtr || rhsType == Uninitialized || rhsType == Empty;
+                case InstPtr:
+                    return rhsType == StorageType.InstPtr || rhsType == Uninitialized || rhsType == Empty;
                 case Empty:
                 case Uninitialized:
                     return false;
@@ -317,6 +328,10 @@ public abstract class SequenceStorageNodes {
                     return rhsType == Double || rhsType == Uninitialized || rhsType == Empty;
                 case Generic:
                     return true;
+                case ComplexPtr:
+                    return rhsType == StorageType.ComplexPtr || rhsType == Uninitialized || rhsType == Empty;
+                case InstPtr:
+                    return rhsType == StorageType.InstPtr || rhsType == Uninitialized || rhsType == Empty;
                 case Empty:
                 case Uninitialized:
                     return false;
@@ -366,6 +381,27 @@ public abstract class SequenceStorageNodes {
 
         protected static boolean isObject(StorageType et) {
             return et == StorageType.Generic;
+        }
+
+        protected static boolean isComplexPtr(SequenceStorage s) {
+            return s instanceof ComplexPtrSequenceStorage;
+        }
+
+        protected static boolean isComplexPtrType(StorageType et) {
+            return et == StorageType.ComplexPtr;
+        }
+
+        /** Pointer-aware list of native-instance words (a subclass of the complex one). */
+        protected static boolean isInstPtr(SequenceStorage s) {
+            return s instanceof InstPtrSequenceStorage;
+        }
+
+        protected static boolean isInstPtrType(StorageType et) {
+            return et == StorageType.InstPtr;
+        }
+
+        protected static boolean isListWordValue(Object v) {
+            return NativeInstance.isListWordValue(v);
         }
     }
 
@@ -621,6 +657,18 @@ public abstract class SequenceStorageNodes {
             return storage.getObjectItemNormalized(idx);
         }
 
+        /** A load builds an in-flight object around the pointer (no count). */
+        @Specialization
+        protected static Object doInstPtr(InstPtrSequenceStorage storage, int idx,
+                        @Cached(value = "createForList()", uncached = "getUncachedForList()", inline = false) NativeSlotNodes.FromWordNode fromWord) {
+            return fromWord.execute(storage.getWord(idx));
+        }
+
+        @Specialization(guards = "!isInstPtr(storage)")
+        protected static Object doComplexPtr(Node inliningTarget, ComplexPtrSequenceStorage storage, int idx) {
+            return storage.getItemNormalized(PythonLanguage.get(inliningTarget), idx);
+        }
+
         @Specialization
         protected static int doNativeInt(NativeIntSequenceStorage storage, int idx) {
             return storage.getIntItemNormalized(idx);
@@ -680,6 +728,11 @@ public abstract class SequenceStorageNodes {
         @SuppressWarnings("unused")
         protected static EmptySequenceStorage doEmpty(EmptySequenceStorage storage, int start, int stop, int step, int length) {
             return EmptySequenceStorage.INSTANCE;
+        }
+
+        @Specialization
+        protected static SequenceStorage doComplexPtr(ComplexPtrSequenceStorage storage, int start, @SuppressWarnings("unused") int stop, int step, int length) {
+            return storage.getSliceCopy(start, step, length);
         }
 
         @Specialization
@@ -1326,6 +1379,18 @@ public abstract class SequenceStorageNodes {
             storage.setObjectItemNormalized(idx, value);
         }
 
+        /** +1 on the stored instance (made native first if needed), -1 on the old word. */
+        @Specialization(guards = "isListWordValue(value)")
+        protected static void doInstPtr(@SuppressWarnings("unused") Node inliningTarget, InstPtrSequenceStorage storage, int idx, Object value,
+                        @Cached(inline = false) NativeSlotNodes.ToWordNode toWord) {
+            storage.setWordOwned(idx, toWord.execute(value));
+        }
+
+        @Specialization(guards = {"value.isExact()", "!isInstPtr(storage)"})
+        protected static void doComplexPtr(@SuppressWarnings("unused") Node inliningTarget, ComplexPtrSequenceStorage storage, int idx, PComplex value) {
+            storage.setItemNormalized(idx, value);
+        }
+
         @Specialization
         protected static void doForeign(Node inliningTarget, ForeignSequenceStorage storage, int idx, Object value,
                         @Cached ForeignSequenceStorage.WriteNode writeNode) {
@@ -1417,7 +1482,7 @@ public abstract class SequenceStorageNodes {
                         @Cached PythonToNativeInternalNode toNative,
                         @Cached CExtNodes.XDecRefPointerNode decRefPointerNode) {
             long old = readPtrArrayElement(storage.getPtr(), idx);
-            Object promoted = ensurePythonObjectNode.execute(PythonContext.get(inliningTarget), value, false);
+            Object promoted = CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(PythonContext.get(inliningTarget), ensurePythonObjectNode.execute(PythonContext.get(inliningTarget), value, false));
             writePtrArrayElement(storage.getPtr(), idx, toNative.executeNewRef(inliningTarget, promoted));
             decRefPointerNode.execute(inliningTarget, old);
         }
@@ -1440,7 +1505,7 @@ public abstract class SequenceStorageNodes {
                         @Bind Node inliningTarget,
                         @Cached CExtNodes.EnsurePythonObjectNode ensurePythonObjectNode,
                         @Cached PythonToNativeInternalNode toNative) {
-            Object promoted = ensurePythonObjectNode.execute(PythonContext.get(inliningTarget), value, false);
+            Object promoted = CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(PythonContext.get(inliningTarget), ensurePythonObjectNode.execute(PythonContext.get(inliningTarget), value, false));
             writePtrArrayElement(storage.getPtr(), idx, toNative.executeNewRef(inliningTarget, promoted));
         }
     }
@@ -1592,6 +1657,11 @@ public abstract class SequenceStorageNodes {
         }
 
         @Specialization
+        static void doComplexPtr(ComplexPtrSequenceStorage storage) {
+            storage.reverse();
+        }
+
+        @Specialization
         static void doIntStorage(Node inliningTarget, IntSequenceStorage storage) {
             storage.reverse();
             LoopNode.reportLoopCount(inliningTarget, (storage.length() >>> 1) + (storage.length() & 1));
@@ -1730,7 +1800,38 @@ public abstract class SequenceStorageNodes {
 
         public abstract void execute(SequenceStorage s, SliceInfo info, SequenceStorage iterable, boolean canGeneralize);
 
-        @Specialization(limit = "MAX_BASIC_STORAGES", guards = {"self.getClass() == cachedClass", "self.getClass() == sequence.getClass()", "replacesWholeSequence(cachedClass, self, info)"})
+        /** Slice assignment into a pointer list keeps every count exact. */
+        @Specialization
+        static void doComplexPtr(ComplexPtrSequenceStorage self, SliceInfo sinfo, SequenceStorage values, @SuppressWarnings("unused") boolean canGeneralize,
+                        @Bind Node inliningTarget,
+                        @Exclusive @Cached PRaiseNode raiseNode) {
+            long[] owned = ownedWords(self, values);
+            if (owned == null) {
+                throw new SequenceStoreException(values.getIndicativeValue());
+            }
+            int n = owned.length;
+            int start = sinfo.start;
+            int stop = sinfo.stop;
+            int step = sinfo.step;
+            if (step == 1) {
+                if (start > stop) {
+                    stop = start;
+                }
+                self.replaceRange(start, stop, owned, n);
+            } else {
+                int slicelen = sinfo.sliceLength;
+                if (n == 0) {
+                    self.deleteSlice(start, step, slicelen);
+                } else if (n != slicelen) {
+                    releaseOwned(self, owned);
+                    throw raiseNode.raise(inliningTarget, ValueError, ErrorMessages.ATTEMPT_TO_ASSIGN_SEQ_OF_SIZE_TO_SLICE_OF_SIZE, n, slicelen);
+                } else {
+                    self.setStepped(start, step, owned, n);
+                }
+            }
+        }
+
+        @Specialization(limit = "MAX_BASIC_STORAGES", guards = {"self.getClass() == cachedClass", "self.getClass() == sequence.getClass()", "replacesWholeSequence(cachedClass, self, info)", "!isComplexPtr(self)"})
         static void doWholeSequence(ArrayBasedSequenceStorage self, @SuppressWarnings("unused") SliceInfo info, ArrayBasedSequenceStorage sequence, @SuppressWarnings("unused") boolean canGeneralize,
                         @Cached("self.getClass()") Class<? extends ArrayBasedSequenceStorage> cachedClass) {
             ArrayBasedSequenceStorage selfProfiled = cachedClass.cast(self);
@@ -1740,7 +1841,7 @@ public abstract class SequenceStorageNodes {
             selfProfiled.minimizeCapacity();
         }
 
-        @Specialization(guards = {"!canGeneralize || isDataTypeCompatibleNode.execute(inliningTarget, self, values)", "sinfo.step == 1"}, limit = "1")
+        @Specialization(guards = {"!isComplexPtr(self)", "!canGeneralize || isDataTypeCompatibleNode.execute(inliningTarget, self, values)", "sinfo.step == 1"}, limit = "1")
         static void singleStep(SequenceStorage self, SliceInfo sinfo, SequenceStorage values, @SuppressWarnings("unused") boolean canGeneralize,
                         @Bind Node inliningTarget,
                         @Exclusive @Cached @SuppressWarnings("unused") IsDataTypeCompatibleNode isDataTypeCompatibleNode,
@@ -1766,7 +1867,7 @@ public abstract class SequenceStorageNodes {
             singleStep(self, start, stop, data, needed, inliningTarget, setLenNode, ensureCapacityNode, memove, memcpy, memoryError, negGrowth, posGrowth, raiseNode);
         }
 
-        @Specialization(guards = {"!canGeneralize || isDataTypeCompatibleNode.execute(inliningTarget, self, values)", "sinfo.step != 1"}, limit = "1")
+        @Specialization(guards = {"!isComplexPtr(self)", "!canGeneralize || isDataTypeCompatibleNode.execute(inliningTarget, self, values)", "sinfo.step != 1"}, limit = "1")
         static void multiStep(SequenceStorage self, SliceInfo sinfo, SequenceStorage values, @SuppressWarnings("unused") boolean canGeneralize,
                         @Bind Node inliningTarget,
                         @Exclusive @Cached @SuppressWarnings("unused") IsDataTypeCompatibleNode isDataTypeCompatibleNode,
@@ -1800,7 +1901,7 @@ public abstract class SequenceStorageNodes {
             }
         }
 
-        @Specialization(guards = {"canGeneralize", "!isAssignCompatibleNode.execute(inliningTarget, self, sequence)"}, limit = "1")
+        @Specialization(guards = {"!isComplexPtr(self)", "canGeneralize", "!isAssignCompatibleNode.execute(inliningTarget, self, sequence)"}, limit = "1")
         static void doError(@SuppressWarnings("unused") SequenceStorage self, @SuppressWarnings("unused") SliceInfo info, SequenceStorage sequence, @SuppressWarnings("unused") boolean canGeneralize,
                         @SuppressWarnings("unused") @Bind Node inliningTarget,
                         @Cached @SuppressWarnings("unused") IsAssignCompatibleNode isAssignCompatibleNode) {
@@ -2275,7 +2376,7 @@ public abstract class SequenceStorageNodes {
             }
         }
 
-        @Specialization(guards = {"dest == left", "left.getClass() == right.getClass()", "cachedClass == left.getClass()"}, limit = "1")
+        @Specialization(guards = {"dest == left", "left.getClass() == right.getClass()", "cachedClass == left.getClass()", "!isComplexPtr(left)"}, limit = "1")
         static SequenceStorage doArrayBasedManagedManagedSameTypeInplace(@SuppressWarnings("unused") ArrayBasedSequenceStorage dest, ArrayBasedSequenceStorage left, ArrayBasedSequenceStorage right,
                         @Bind Node inliningTarget,
                         @Cached("left.getClass()") Class<? extends ArrayBasedSequenceStorage> cachedClass,
@@ -2291,7 +2392,7 @@ public abstract class SequenceStorageNodes {
             return leftProfiled;
         }
 
-        @Specialization(guards = {"dest != left", "dest.getClass() == left.getClass()", "left.getClass() == right.getClass()", "cachedClass == dest.getClass()"}, limit = "1")
+        @Specialization(guards = {"dest != left", "dest.getClass() == left.getClass()", "left.getClass() == right.getClass()", "cachedClass == dest.getClass()", "!isComplexPtr(dest)"}, limit = "1")
         static SequenceStorage doArrayBasedManagedManagedSameType(ArrayBasedSequenceStorage dest, ArrayBasedSequenceStorage left, ArrayBasedSequenceStorage right,
                         @Bind Node inliningTarget,
                         @Cached("left.getClass()") Class<? extends ArrayBasedSequenceStorage> cachedClass,
@@ -2308,7 +2409,7 @@ public abstract class SequenceStorageNodes {
             return destProfiled;
         }
 
-        @Specialization(guards = {"dest.getClass() == right.getClass()", "cachedClass == dest.getClass()"}, limit = "1")
+        @Specialization(guards = {"dest.getClass() == right.getClass()", "cachedClass == dest.getClass()", "!isComplexPtr(dest)"}, limit = "1")
         static SequenceStorage doArrayBasedEmptyManagedSameType(ArrayBasedSequenceStorage dest, @SuppressWarnings("unused") EmptySequenceStorage left, ArrayBasedSequenceStorage right,
                         @Bind Node inliningTarget,
                         @Cached("dest.getClass()") Class<? extends ArrayBasedSequenceStorage> cachedClass,
@@ -2322,7 +2423,7 @@ public abstract class SequenceStorageNodes {
             return destProfiled;
         }
 
-        @Specialization(guards = {"dest.getClass() == left.getClass()", "cachedClass == dest.getClass()"}, limit = "1")
+        @Specialization(guards = {"dest.getClass() == left.getClass()", "cachedClass == dest.getClass()", "!isComplexPtr(dest)"}, limit = "1")
         static SequenceStorage doArrayBasedManagedEmptySameType(ArrayBasedSequenceStorage dest, ArrayBasedSequenceStorage left, @SuppressWarnings("unused") EmptySequenceStorage right,
                         @Bind Node inliningTarget,
                         @Cached("left.getClass()") Class<? extends ArrayBasedSequenceStorage> cachedClass,
@@ -2526,6 +2627,19 @@ public abstract class SequenceStorageNodes {
 
         public abstract SequenceStorage execute(VirtualFrame frame, SequenceStorage left, int times);
 
+        @Specialization(guards = "times > 0")
+        SequenceStorage doComplexPtr(ComplexPtrSequenceStorage s, int times,
+                        @Bind Node inliningTarget,
+                        @Exclusive @Cached PRaiseNode raiseNode) {
+            try {
+                return s.repeat(times);
+            } catch (OutOfMemoryError e) {
+                throw raiseNode.raise(inliningTarget, MemoryError);
+            } catch (ArithmeticException e) {
+                throw raiseNode.raise(inliningTarget, errorForOverflow);
+            }
+        }
+
         @Specialization
         static SequenceStorage doEmpty(EmptySequenceStorage s, @SuppressWarnings("unused") int times) {
             return s;
@@ -2634,7 +2748,7 @@ public abstract class SequenceStorageNodes {
             }
         }
 
-        @Specialization(limit = "MAX_BASIC_STORAGES", guards = {"times > 0", "!isNative(s)", "s.getClass() == cachedClass"})
+        @Specialization(limit = "MAX_BASIC_STORAGES", guards = {"times > 0", "!isNative(s)", "s.getClass() == cachedClass", "!isComplexPtr(s)"})
         SequenceStorage doArrayBasedManaged(ArrayBasedSequenceStorage s, int times,
                         @Bind Node inliningTarget,
                         @Shared @Cached PRaiseNode raiseNode,
@@ -2656,7 +2770,7 @@ public abstract class SequenceStorageNodes {
             }
         }
 
-        @Specialization(replaces = "doArrayBasedManaged", guards = "times > 0")
+        @Specialization(replaces = "doArrayBasedManaged", guards = {"times > 0", "!isComplexPtr(s)"})
         @SuppressWarnings("truffle-static-method")
         SequenceStorage doGeneric(SequenceStorage s, int times,
                         @Bind Node inliningTarget,
@@ -2933,7 +3047,58 @@ public abstract class SequenceStorageNodes {
         }
 
         protected static boolean isKnownType(Object val) {
-            return val instanceof Byte || val instanceof Integer || val instanceof Long || val instanceof Double;
+            return val instanceof Byte || val instanceof Integer || val instanceof Long || val instanceof Double || isNativeComplexCandidate(val) || isNativeInstCandidate(val);
+        }
+
+        /**
+         * A native-layout instance or None (once an opt-in class exists) starts a
+         * pointer-aware list (never at image build time).
+         */
+        protected static boolean isNativeInstCandidate(Object val) {
+            return NativeInstance.isListWordValue(val) && !ImageInfo.inImageBuildtimeCode();
+        }
+
+        @Specialization(guards = "isNativeInstCandidate(val)")
+        static InstPtrSequenceStorage doEmptyInst(Node inliningTarget, @SuppressWarnings("unused") EmptySequenceStorage s, @SuppressWarnings("unused") Object val) {
+            return new InstPtrSequenceStorage(NativeInstance.state(PythonContext.get(inliningTarget)), ArrayBasedSequenceStorage.DEFAULT_CAPACITY);
+        }
+
+        protected static boolean isInstOrSame(Object val) {
+            return NativeInstance.isListWordValue(val) || val instanceof InstPtrSequenceStorage;
+        }
+
+        @Specialization(guards = "isInstOrSame(val)")
+        static InstPtrSequenceStorage doInstInst(InstPtrSequenceStorage s, @SuppressWarnings("unused") Object val) {
+            return s;
+        }
+
+        @Specialization(guards = "!isInstOrSame(val)")
+        static ObjectSequenceStorage doInstGeneric(Node inliningTarget, InstPtrSequenceStorage s, @SuppressWarnings("unused") Object val) {
+            return generalizeComplexPtr(PythonLanguage.get(inliningTarget), s);
+        }
+
+        /** An exact complex that starts a pointer list (never at image build time). */
+        protected static boolean isNativeComplexCandidate(Object val) {
+            return val instanceof PComplex c && c.isExact() && !ImageInfo.inImageBuildtimeCode();
+        }
+
+        @Specialization(guards = "isNativeComplexCandidate(val)")
+        static ComplexPtrSequenceStorage doEmptyComplex(Node inliningTarget, @SuppressWarnings("unused") EmptySequenceStorage s, @SuppressWarnings("unused") Object val) {
+            return new ComplexPtrSequenceStorage(PythonContext.get(inliningTarget).getNativeComplexState(), ArrayBasedSequenceStorage.DEFAULT_CAPACITY);
+        }
+
+        protected static boolean isExactComplexOrSame(Object val) {
+            return val instanceof PComplex c && c.isExact() || val instanceof ComplexPtrSequenceStorage c2 && !c2.isInst();
+        }
+
+        @Specialization(guards = {"isExactComplexOrSame(val)", "!s.isInst()"})
+        static ComplexPtrSequenceStorage doComplexComplex(ComplexPtrSequenceStorage s, @SuppressWarnings("unused") Object val) {
+            return s;
+        }
+
+        @Specialization(guards = {"!isExactComplexOrSame(val)", "!s.isInst()"})
+        static ObjectSequenceStorage doComplexGeneric(Node inliningTarget, ComplexPtrSequenceStorage s, @SuppressWarnings("unused") Object val) {
+            return generalizeComplexPtr(PythonLanguage.get(inliningTarget), s);
         }
 
         @Specialization(guards = "!isKnownType(val)")
@@ -3012,7 +3177,7 @@ public abstract class SequenceStorageNodes {
 
         protected static boolean isFallbackCase(SequenceStorage s, Object value) {
             // there are explicit specializations for all cases with EmptySequenceStorage
-            if (s instanceof EmptySequenceStorage || s instanceof ObjectSequenceStorage || s instanceof NativeSequenceStorage) {
+            if (s instanceof EmptySequenceStorage || s instanceof ObjectSequenceStorage || s instanceof NativeSequenceStorage || s instanceof ComplexPtrSequenceStorage) {
                 return false;
             }
             if ((s instanceof ByteSequenceStorage || s instanceof IntSequenceStorage || s instanceof LongSequenceStorage) &&
@@ -3136,6 +3301,16 @@ public abstract class SequenceStorageNodes {
 
         public abstract ArrayBasedSequenceStorage execute(Node inliningTarget, StorageType type, int cap);
 
+        @Specialization(guards = "isInstPtrType(type)")
+        static InstPtrSequenceStorage doInstPtr(Node inliningTarget, @SuppressWarnings("unused") StorageType type, int cap) {
+            return new InstPtrSequenceStorage(NativeInstance.state(PythonContext.get(inliningTarget)), Math.max(cap, 1));
+        }
+
+        @Specialization(guards = "isComplexPtrType(type)")
+        static ComplexPtrSequenceStorage doComplexPtr(Node inliningTarget, @SuppressWarnings("unused") StorageType type, int cap) {
+            return new ComplexPtrSequenceStorage(PythonContext.get(inliningTarget).getNativeComplexState(), Math.max(cap, 1));
+        }
+
         @Specialization(guards = "isBoolean(type)")
         static BoolSequenceStorage doBoolean(@SuppressWarnings("unused") StorageType type, int cap) {
             return new BoolSequenceStorage(cap);
@@ -3245,6 +3420,11 @@ public abstract class SequenceStorageNodes {
         }
 
         @Specialization
+        static void doComplexPtr(ComplexPtrSequenceStorage storage, int cap) {
+            storage.ensureCapacity(cap);
+        }
+
+        @Specialization
         static void doNativePrimitive(NativePrimitiveSequenceStorage storage, int cap) {
             if (CompilerDirectives.injectBranchProbability(CompilerDirectives.UNLIKELY_PROBABILITY, cap > storage.getCapacity())) {
                 storage.reallocate(cap);
@@ -3332,6 +3512,11 @@ public abstract class SequenceStorageNodes {
         @Specialization
         static SequenceStorage doEmpty(EmptySequenceStorage s) {
             return s;
+        }
+
+        @Specialization
+        static SequenceStorage doComplexPtr(Node inliningTarget, ComplexPtrSequenceStorage storage) {
+            return new ObjectSequenceStorage(storage.getCopyOfInternalArray(PythonLanguage.get(inliningTarget)));
         }
 
         @Specialization
@@ -3423,6 +3608,11 @@ public abstract class SequenceStorageNodes {
         }
 
         @Specialization
+        static Object[] doComplexPtr(Node inliningTarget, ComplexPtrSequenceStorage storage) {
+            return storage.getCopyOfInternalArray(PythonLanguage.get(inliningTarget));
+        }
+
+        @Specialization
         static Object[] doInt(Node inliningTarget, IntSequenceStorage storage) {
             return storage.getCopyOfInternalArray(inliningTarget);
         }
@@ -3482,9 +3672,15 @@ public abstract class SequenceStorageNodes {
 
         public abstract void execute(Node inliningTarget, SequenceStorage s, int len);
 
+        /*
+         * The exact class profile lets compiled code bind setNewLength statically: once a storage
+         * class overrides it (the pointer storages of the native object model), the call is
+         * otherwise virtual and stays an out-of-line call in every del/pop/clear of a list.
+         */
         @Specialization
-        static void doBasic(ArrayBasedSequenceStorage s, int len) {
-            s.setNewLength(len);
+        static void doBasic(Node inliningTarget, ArrayBasedSequenceStorage s, int len,
+                        @Cached InlinedExactClassProfile storageClassProfile) {
+            storageClassProfile.profile(inliningTarget, s).setNewLength(len);
         }
 
         @Specialization
@@ -3623,13 +3819,21 @@ public abstract class SequenceStorageNodes {
 
         public abstract void execute(Node node, SequenceStorage s, int idx);
 
+        @Specialization
+        static void doComplexPtr(ComplexPtrSequenceStorage s, int idx) {
+            long p = s.removePtr(idx);
+            if (p != 0) {
+                s.decw(p);
+            }
+        }
+
         @Specialization(guards = {"isLastItem(s, idx)", "!isForeignSequenceStorage(s)"})
         static void doLastItem(Node inliningTarget, SequenceStorage s, @SuppressWarnings("unused") int idx,
                         @Exclusive @Cached SetLenNode setLenNode) {
             setLenNode.execute(inliningTarget, s, s.length() - 1);
         }
 
-        @Specialization(guards = {"!isNativeObjectStorage(s)", "!isForeignSequenceStorage(s)"})
+        @Specialization(guards = {"!isNativeObjectStorage(s)", "!isForeignSequenceStorage(s)", "!isComplexPtr(s)"})
         static void doGeneric(Node inliningTarget, SequenceStorage s, int idx,
                         @Cached GetItemScalarNode getItemNode,
                         @Cached SetItemScalarNode setItemNode,
@@ -3672,7 +3876,20 @@ public abstract class SequenceStorageNodes {
 
         public abstract void execute(Node inliningTarget, SequenceStorage s, SliceInfo info);
 
-        @Specialization(guards = "sinfo.step == 1")
+        @Specialization
+        static void doComplexPtr(ComplexPtrSequenceStorage store, SliceInfo sinfo) {
+            int start = sinfo.start;
+            int step = sinfo.step;
+            int slicelen = sinfo.sliceLength;
+            if (step < 0) {
+                // same normalization as multipleSteps: delete the same elements in ascending order
+                start = start + step * (slicelen - 1);
+                step = -step;
+            }
+            store.deleteSlice(start, step, slicelen);
+        }
+
+        @Specialization(guards = {"!isComplexPtr(store)", "sinfo.step == 1"})
         static void singleStep(Node inliningTarget, SequenceStorage store, SliceInfo sinfo,
                         @Cached InlinedConditionProfile shortCircuitProfile,
                         @Exclusive @Cached SetLenNode setLenNode,
@@ -3711,7 +3928,7 @@ public abstract class SequenceStorageNodes {
             setLenNode.execute(inliningTarget, store, length + d);
         }
 
-        @Specialization(guards = "sinfo.step != 1")
+        @Specialization(guards = {"!isComplexPtr(store)", "sinfo.step != 1"})
         static void multipleSteps(Node inliningTarget, SequenceStorage store, SliceInfo sinfo,
                         @Cached EnsureCapacityNode ensureCapacityNode,
                         @Exclusive @Cached SetLenNode setLenNode,
@@ -3777,6 +3994,12 @@ public abstract class SequenceStorageNodes {
     public abstract static class GetElementType extends Node {
 
         public abstract StorageType execute(Node inliningTarget, SequenceStorage s);
+
+        @Specialization
+        static StorageType type(ComplexPtrSequenceStorage s) {
+            // The instance-word subclass reports InstPtr
+            return s.getElementType();
+        }
 
         @Specialization
         static StorageType type(EmptySequenceStorage s) {
@@ -4008,6 +4231,41 @@ public abstract class SequenceStorageNodes {
 
         protected abstract SequenceStorage execute(Node inliningTarget, ArrayBasedSequenceStorage storage, int index, Object value);
 
+        @Specialization(guards = "isListWordValue(value)")
+        static SequenceStorage doInstPtr(InstPtrSequenceStorage storage, int idx, Object value,
+                        @Cached(inline = false) NativeSlotNodes.ToWordNode toWord) {
+            storage.insertWordOwned(idx, toWord.execute(value));
+            return storage;
+        }
+
+        @Specialization(guards = "!isListWordValue(value)")
+        static SequenceStorage doInstPtrGeneralize(Node inliningTarget, InstPtrSequenceStorage storage, int idx, Object value) {
+            ObjectSequenceStorage newStorage = generalizeComplexPtr(PythonLanguage.get(inliningTarget), storage);
+            newStorage.insertItem(idx, value);
+            return newStorage;
+        }
+
+        @Specialization(guards = {"value.isExact()", "!storage.isInst()"})
+        static SequenceStorage doComplexPtr(ComplexPtrSequenceStorage storage, int idx, PComplex value) {
+            storage.insertItem(idx, value);
+            return storage;
+        }
+
+        @Specialization(guards = {"!isExactComplex(value)", "!storage.isInst()"})
+        static SequenceStorage doComplexPtrGeneralize(Node inliningTarget, ComplexPtrSequenceStorage storage, int idx, Object value) {
+            ObjectSequenceStorage newStorage = generalizeComplexPtr(PythonLanguage.get(inliningTarget), storage);
+            newStorage.insertItem(idx, value);
+            return newStorage;
+        }
+
+        protected static boolean isListWordValue(Object v) {
+            return NativeInstance.isListWordValue(v);
+        }
+
+        protected static boolean isExactComplex(Object value) {
+            return value instanceof PComplex c && c.isExact();
+        }
+
         @Specialization
         static SequenceStorage doIntStorage(IntSequenceStorage storage, int idx, int value) {
             storage.insertIntItem(idx, value);
@@ -4147,7 +4405,7 @@ public abstract class SequenceStorageNodes {
                 writePtrArrayElement(storage.getPtr(), i, readPtrArrayElement(storage.getPtr(), i - 1));
             }
             LoopNode.reportLoopCount(inliningTarget, (int) Math.min(Integer.MAX_VALUE, Math.max(0L, (long) storage.length() - index)));
-            Object promoted = ensurePythonObjectNode.execute(PythonContext.get(inliningTarget), value, false);
+            Object promoted = CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(PythonContext.get(inliningTarget), ensurePythonObjectNode.execute(PythonContext.get(inliningTarget), value, false));
             writePtrArrayElement(storage.getPtr(), index, toNative.executeNewRef(inliningTarget, promoted));
             storage.setNewLength(newLength);
             return storage;
@@ -4435,4 +4693,91 @@ public abstract class SequenceStorageNodes {
             return CreateStorageFromIteratorUncachedNode.INSTANCE;
         }
     }
+
+    /**
+     * Replaces a pointer list storage by an object storage. The elements become Java
+     * complex objects (value copies) and every element reference is dropped.
+     */
+    @TruffleBoundary
+    public static ObjectSequenceStorage generalizeComplexPtr(PythonLanguage language, ComplexPtrSequenceStorage s) {
+        Object[] boxed = s.getCopyOfInternalArray(language);
+        // The object storage pins boxed instances before the list's references are dropped
+        ObjectSequenceStorage res = new ObjectSequenceStorage(boxed);
+        if (s.isInst()) {
+            NativeInstance.count(NativeInstance.C_LIST_GENERALIZE);
+        }
+        s.releaseAllAndClear();
+        return res;
+    }
+
+    /**
+     * Counted words for every element of {@code values} if they all fit {@code self}'s kind (pointer
+     * storage of the same kind, empty storage, or object storage of fitting values); else null.
+     */
+    @TruffleBoundary
+    static long[] ownedWords(ComplexPtrSequenceStorage self, SequenceStorage values) {
+        if (!self.isInst()) {
+            if (values instanceof ComplexPtrSequenceStorage c && c.isInst()) {
+                return null;
+            }
+            return complexOwnedPtrs(self.getState(), values);
+        }
+        if (values instanceof InstPtrSequenceStorage c) {
+            return c.getCountedPtrs();
+        } else if (values instanceof EmptySequenceStorage) {
+            return new long[0];
+        } else if (values instanceof ObjectSequenceStorage o) {
+            Object[] arr = o.getInternalObjectArray();
+            int n = o.length();
+            for (int i = 0; i < n; i++) {
+                if (!NativeInstance.isListWordValue(arr[i])) {
+                    return null;
+                }
+            }
+            PythonContext ctx = PythonContext.get(null);
+            long st = NativeInstance.state(ctx);
+            long[] res = new long[n];
+            for (int i = 0; i < n; i++) {
+                res[i] = NativeInstance.toWordGeneric(ctx, st, arr[i]);
+            }
+            return res;
+        }
+        return null;
+    }
+
+    static void releaseOwned(ComplexPtrSequenceStorage self, long[] owned) {
+        for (long w : owned) {
+            self.decw(w);
+        }
+    }
+
+    /**
+     * Counted pointers for every element of {@code values} if all are exact complex
+     * (pointer storage, empty storage, or object storage holding only exact complex); else null.
+     */
+    static long[] complexOwnedPtrs(long state, SequenceStorage values) {
+        if (values instanceof ComplexPtrSequenceStorage c) {
+            return c.getCountedPtrs();
+        } else if (values instanceof EmptySequenceStorage) {
+            return new long[0];
+        } else if (values instanceof ObjectSequenceStorage o) {
+            Object[] arr = o.getInternalObjectArray();
+            int n = o.length();
+            for (int i = 0; i < n; i++) {
+                if (!(arr[i] instanceof PComplex c && c.isExact())) {
+                    return null;
+                }
+            }
+            long[] res = new long[n];
+            for (int i = 0; i < n; i++) {
+                long p = NativeComplex.materialize(state, (PComplex) arr[i]);
+                NativeComplex.incref(p);
+                res[i] = p;
+            }
+            return res;
+        }
+        return null;
+    }
+
+
 }

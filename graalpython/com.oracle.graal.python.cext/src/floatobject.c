@@ -151,9 +151,16 @@ PyFloat_FromDouble(double fval)
     // GraalPy: different implementation
     if (fval == (float)fval) {
         return float_to_pointer(fval);
-    } else {
-        return GraalPyPrivate_Float_FromDouble(fval);
     }
+    // A native PyFloatObject struct (PyObject_Malloc: small-block pool shared with Java) instead of
+    // an upcall that creates a Java PFloat and a handle-space stub
+    op = (PyFloatObject *) PyObject_Malloc(sizeof(PyFloatObject));
+    if (op == NULL) {
+        return PyErr_NoMemory();
+    }
+    (void) PyObject_Init((PyObject *) op, &PyFloat_Type);
+    op->ob_fval = fval;
+    return (PyObject *) op;
 }
 #if 0 // GraalPy change
 #ifdef WITH_FREELISTS

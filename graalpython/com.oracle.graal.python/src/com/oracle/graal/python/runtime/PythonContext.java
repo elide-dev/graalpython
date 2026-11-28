@@ -766,6 +766,9 @@ public final class PythonContext extends Python3Core {
 
     @CompilationFinal private SecureRandom secureRandom;
 
+    /** Address of the shared native complex allocator state (0 = not yet created). */
+    @CompilationFinal private long nativeComplexState;
+    @CompilationFinal private long nativeInstanceState;
     /** Address of the C API "Java ran" epoch word (see CApiEpoch), 0 until C asks for it. */
     @CompilationFinal private long capiEpochAddress;
     private InitializationEntropySource initializationEntropySource;
@@ -2580,6 +2583,35 @@ public final class PythonContext extends Python3Core {
         assert cApiState != CApiState.FAILED;
         assert cApiState != CApiState.CANNOT_IMPORT;
         cApiState = state;
+    }
+
+    /** The native complex allocator state; created lazily at run time. */
+    public long getNativeComplexState() {
+        long st = nativeComplexState;
+        if (CompilerDirectives.injectBranchProbability(CompilerDirectives.SLOWPATH_PROBABILITY, st == 0)) {
+            CompilerDirectives.transferToInterpreterAndInvalidate();
+            st = nativeComplexState = com.oracle.graal.python.runtime.nativeaccess.NativeComplex.createState();
+        }
+        return st;
+    }
+
+    /** Native instance allocator state; created lazily at run time. */
+    public long getNativeInstanceState() {
+        long st = nativeInstanceState;
+        if (CompilerDirectives.injectBranchProbability(CompilerDirectives.SLOWPATH_PROBABILITY, st == 0)) {
+            CompilerDirectives.transferToInterpreterAndInvalidate();
+            st = nativeInstanceState = com.oracle.graal.python.runtime.nativeaccess.NativeInstance.createState();
+        }
+        return st;
+    }
+
+    public long peekNativeInstanceState() {
+        return nativeInstanceState;
+    }
+
+    /** The state if it exists, else 0 (no creation). */
+    public long peekNativeComplexState() {
+        return nativeComplexState;
     }
 
     /** Address of the C API "Java ran" epoch word; allocated on first use. */

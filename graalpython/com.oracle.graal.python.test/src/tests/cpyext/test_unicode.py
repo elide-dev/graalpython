@@ -1494,3 +1494,68 @@ class TestNativeUnicodeSubclass(unittest.TestCase):
         assert "sd" in s
         assert UnicodeSubclass("<{}>").format("asdf") == "<asdf>"
         assert UnicodeSubclass("<%s>") % "asdf" == "<asdf>"
+
+
+class TestStrIdentityThroughDict(unittest.TestCase):
+    """
+    C code that interns strings in a dict (look the string up, insert it if missing, return the
+    dict's value), as pyexpat does for element names, must hand Python the same object every time,
+    and that object must be the one the dict holds.
+    """
+
+    StrInternDict = CPyExtType(
+        "StrInternDict",
+        '''
+        static PyObject* intern_in_dict(PyObject *d, PyObject *result) {
+            PyObject *value;
+            if (result == NULL) {
+                return NULL;
+            }
+            if (PyDict_GetItemRef(d, result, &value) == 0 && PyDict_SetItem(d, result, result) == 0) {
+                return result;
+            }
+            Py_DECREF(result);
+            return value;
+        }
+
+        static PyObject* intern_utf8(PyObject *cls, PyObject *args) {
+            PyObject *d;
+            const char *s;
+            if (!PyArg_ParseTuple(args, "Os", &d, &s)) {
+                return NULL;
+            }
+            return intern_in_dict(d, PyUnicode_DecodeUTF8(s, (Py_ssize_t) strlen(s), NULL));
+        }
+
+        static PyObject* intern_obj(PyObject *cls, PyObject *args) {
+            PyObject *d, *o;
+            if (!PyArg_ParseTuple(args, "OO", &d, &o)) {
+                return NULL;
+            }
+            Py_INCREF(o);
+            return intern_in_dict(d, o);
+        }
+        ''',
+        tp_methods='{"intern_utf8", (PyCFunction)intern_utf8, METH_VARARGS | METH_STATIC, ""}, '
+                   '{"intern_obj", (PyCFunction)intern_obj, METH_VARARGS | METH_STATIC, ""}',
+    )
+
+    def test_c_created_str(self):
+        d = {}
+        first = self.StrInternDict.intern_utf8(d, "tag")
+        second = self.StrInternDict.intern_utf8(d, "tag")
+        self.assertEqual(first, "tag")
+        self.assertIs(type(first), str)
+        self.assertIs(first, second)
+        self.assertIs(d["tag"], first)
+        self.assertIs(list(d.values())[0], first)
+        self.assertIs(list(d.keys())[0], first)
+
+    def test_python_created_str(self):
+        d = {}
+        first = self.StrInternDict.intern_obj(d, "".join(["ta", "g"]))
+        second = self.StrInternDict.intern_obj(d, "".join(["t", "ag"]))
+        self.assertEqual(first, "tag")
+        self.assertIs(first, second)
+        self.assertIs(d["tag"], first)
+        self.assertIs(list(d.values())[0], first)

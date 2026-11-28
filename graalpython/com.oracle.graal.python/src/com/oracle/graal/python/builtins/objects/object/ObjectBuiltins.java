@@ -296,7 +296,28 @@ public final class ObjectBuiltins extends PythonBuiltins {
             }
         }
 
-        @Specialization(guards = {"!self.needsNativeAllocation()"})
+        static boolean isNativeLayout(Object self) {
+            return self instanceof com.oracle.graal.python.builtins.objects.type.PythonClass pc && pc.getNativeLayoutId() != 0;
+        }
+
+        /**
+         * Instances of native-layout classes. A separate specialization (not a branch
+         * in doManagedObject) so compiled code does not merge two allocation types, which would force
+         * escape analysis to materialize the new object.
+         */
+        @Specialization(guards = {"isNativeLayout(self)"})
+        Object doNativeLayoutObject(VirtualFrame frame, PythonManagedClass self, Object[] varargs, PKeyword[] kwargs,
+                        @Bind Node inliningTarget,
+                        @Shared @Cached CheckExcessArgsNode checkExcessArgsNode,
+                        @Shared @Cached TypeNodes.GetInstanceShape getInstanceShape) {
+            checkExcessArgsNode.execute(inliningTarget, self, varargs, kwargs);
+            if (self.isAbstractClass()) {
+                throw reportAbstractClass(frame, self);
+            }
+            return new com.oracle.graal.python.builtins.objects.object.PNativeLayoutObject(self, getInstanceShape.execute(self));
+        }
+
+        @Specialization(guards = {"!self.needsNativeAllocation()", "!isNativeLayout(self)"})
         Object doManagedObject(VirtualFrame frame, PythonManagedClass self, Object[] varargs, PKeyword[] kwargs,
                         @Bind Node inliningTarget,
                         @Shared @Cached CheckExcessArgsNode checkExcessArgsNode,
@@ -429,10 +450,20 @@ public final class ObjectBuiltins extends PythonBuiltins {
             return hash(getContext().lookupType(self));
         }
 
+        /** Default hash of a native-layout instance derives from the struct pointer. */
+        @Specialization
+        public static long hash(PNativeLayoutObject self) {
+            return Long.rotateRight(com.oracle.graal.python.runtime.nativeaccess.NativeInstance.identity(self), 4);
+        }
+
         @TruffleBoundary
-        @Specialization(guards = "!isPythonBuiltinClassType(self)")
+        @Specialization(guards = {"!isPythonBuiltinClassType(self)", "!isNativeLayout(self)"})
         public static long hash(Object self) {
             return self.hashCode();
+        }
+
+        protected static boolean isNativeLayout(Object self) {
+            return self instanceof PNativeLayoutObject;
         }
     }
 

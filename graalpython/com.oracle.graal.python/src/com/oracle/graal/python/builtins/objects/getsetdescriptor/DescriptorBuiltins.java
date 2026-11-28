@@ -150,9 +150,15 @@ public final class DescriptorBuiltins extends PythonBuiltins {
         static Object doIndexedSlotDescriptor(IndexedSlotDescriptor descr, PythonAbstractObject obj,
                         @Bind Node inliningTarget,
                         @Exclusive @Cached PRaiseNode raiseNode,
-                        @Cached GetOrCreateIndexedSlots getSlotsNode) {
-            Object[] slots = getSlotsNode.execute(inliningTarget, obj);
-            Object val = slots[descr.getIndex()];
+                        @Cached GetOrCreateIndexedSlots getSlotsNode,
+                        @Cached com.oracle.graal.python.runtime.nativeaccess.NativeSlotNodes.ReadSlotNode readSlot) {
+            Object val;
+            if (readSlot.profileNative(obj instanceof com.oracle.graal.python.builtins.objects.object.PNativeLayoutObject n && n.getSlotsPtr() != 0)) {
+                val = readSlot.execute((com.oracle.graal.python.builtins.objects.object.PNativeLayoutObject) obj, descr.getIndex());
+            } else {
+                Object[] slots = getSlotsNode.execute(inliningTarget, obj);
+                val = slots[descr.getIndex()];
+            }
             if (val != null) {
                 return val;
             }
@@ -179,10 +185,30 @@ public final class DescriptorBuiltins extends PythonBuiltins {
         @Specialization
         static Object doIndexedSlotDescriptor(IndexedSlotDescriptor descr, PythonAbstractObject obj, Object value,
                         @Bind Node inliningTarget,
-                        @Cached GetOrCreateIndexedSlots getSlotsNode) {
-            getSlotsNode.execute(inliningTarget, obj)[descr.getIndex()] = value;
+                        @Cached GetOrCreateIndexedSlots getSlotsNode,
+                        @Cached com.oracle.graal.python.runtime.nativeaccess.NativeSlotNodes.WriteSlotNode writeSlot) {
+            writeIndexedSlot(inliningTarget, obj, descr.getIndex(), value, getSlotsNode, writeSlot);
             return true;
         }
+    }
+
+    /**
+     * Slot write shared by the descriptor and the bytecode fast path. A native
+     * instance writes its struct; a not-yet-native opt-in instance keeps the value in its Java slots
+     * (they become native together with it); any other object's slots are a Java-heap location, so a
+     * native-layout value stored there is pinned.
+     */
+    public static void writeIndexedSlot(Node inliningTarget, PythonAbstractObject obj, int index, Object value, GetOrCreateIndexedSlots getSlotsNode,
+                    com.oracle.graal.python.runtime.nativeaccess.NativeSlotNodes.WriteSlotNode writeSlot) {
+        if (obj instanceof com.oracle.graal.python.builtins.objects.object.PNativeLayoutObject n) {
+            if (n.getSlotsPtr() != 0) {
+                writeSlot.execute(n, index, value);
+                return;
+            }
+        } else {
+            com.oracle.graal.python.runtime.nativeaccess.NativeInstance.pinIfNative(value);
+        }
+        getSlotsNode.execute(inliningTarget, obj)[index] = value;
     }
 
     @GenerateInline(value = false)
@@ -213,6 +239,12 @@ public final class DescriptorBuiltins extends PythonBuiltins {
                         @Exclusive @Cached PRaiseNode raiseNode,
                         @Cached GetOrCreateIndexedSlots getSlotsNode,
                         @Cached InlinedConditionProfile profile) {
+            if (obj instanceof com.oracle.graal.python.builtins.objects.object.PNativeLayoutObject n && n.getSlotsPtr() != 0) {
+                if (com.oracle.graal.python.runtime.nativeaccess.NativeSlotNodes.WriteSlotNode.getUncached().execute(n, descr.getIndex(), null)) {
+                    return PNone.NONE;
+                }
+                throw raiseNode.raise(inliningTarget, PythonBuiltinClassType.AttributeError, ErrorMessages.S, descr.getName());
+            }
             // PyMember_SetOne - Check if the attribute is set.
             Object[] slots = getSlotsNode.execute(inliningTarget, obj);
             if (profile.profile(inliningTarget, slots[descr.getIndex()] != null)) {
@@ -233,10 +265,18 @@ public final class DescriptorBuiltins extends PythonBuiltins {
             Object[] slots = object.getIndexedSlots();
             if (slots == null) {
                 initProfile.enter(inliningTarget);
+                checkNotNative(object);
                 slots = new Object[slotsCount];
                 object.setIndexedSlots(slots);
             }
             return slots;
+        }
+
+        /** A native instance has no Java slots; creating them would fork its state. */
+        static void checkNotNative(PythonAbstractObject object) {
+            if (object instanceof com.oracle.graal.python.builtins.objects.object.PNativeLayoutObject n && n.getSlotsPtr() != 0) {
+                throw com.oracle.truffle.api.CompilerDirectives.shouldNotReachHere("Java slots requested for a native instance");
+            }
         }
 
         @Specialization(guards = "object.getIndexedSlots() != null")
@@ -248,6 +288,7 @@ public final class DescriptorBuiltins extends PythonBuiltins {
         static Object[] doCreate(Node inliningTarget, PythonAbstractObject object,
                         @Cached GetIndexedSlotsCountNode getIndexedSlotsCountNode,
                         @Cached GetClassNode getClassNode) {
+            checkNotNative(object);
             Object cls = getClassNode.execute(inliningTarget, object);
             int slotCount = getIndexedSlotsCountNode.execute(inliningTarget, cls);
             Object[] slots = new Object[slotCount];

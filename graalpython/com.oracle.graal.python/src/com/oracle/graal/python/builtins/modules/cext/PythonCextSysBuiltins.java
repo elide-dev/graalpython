@@ -92,7 +92,7 @@ public final class PythonCextSysBuiltins {
                 if (value == PNone.NO_VALUE) {
                     return NATIVE_NULL;
                 }
-                Object promotedValue = ensureNode.execute(context, value, false);
+                Object promotedValue = com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(context, ensureNode.execute(context, value, false));
                 if (promotedValue != value) {
                     setAttrNode.execute(inliningTarget, sys, name, promotedValue);
                     return promotedValue;

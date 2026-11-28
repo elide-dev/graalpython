@@ -1154,6 +1154,18 @@ PyObject_RichCompareBool(PyObject *v, PyObject *w, int op)
     return ok;
 }
 
+// GraalPy change: native strs hash in C; everything else goes to the managed builtin
+Py_LOCAL_SYMBOL int GraalPyPrivate_Str_HashIfNative(PyObject *op, Py_hash_t *hash);
+Py_hash_t
+PyObject_Hash(PyObject *v)
+{
+    Py_hash_t h;
+    if (GraalPyPrivate_Str_HashIfNative(v, &h)) {
+        return h;
+    }
+    return GraalPyPrivate_Object_Hash(v);
+}
+
 #if 0 // GraalPy change
 Py_hash_t
 PyObject_HashNotImplemented(PyObject *v)

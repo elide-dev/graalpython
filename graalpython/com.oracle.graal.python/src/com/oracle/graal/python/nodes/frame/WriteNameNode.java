@@ -60,6 +60,7 @@ public abstract class WriteNameNode extends PNodeWithContext implements AccessNa
 
     public final void execute(VirtualFrame frame, TruffleString attributeId, Object value) {
         CompilerAsserts.partialEvaluationConstant(attributeId);
+        com.oracle.graal.python.runtime.nativeaccess.NativeInstance.pinIfNative(value);
         executeImpl(frame, attributeId, value);
     }
 

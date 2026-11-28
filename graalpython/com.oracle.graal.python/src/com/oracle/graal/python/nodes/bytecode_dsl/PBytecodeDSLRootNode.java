@@ -2583,7 +2583,20 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
             return IsSubtypeNode.getUncached().execute(cachedShape.getDynamicType(), descriptor.getType());
         }
 
-        static Object getIndexedSlotValue(Node inliningTarget, InlinedBranchProfile initProfile, PythonObject receiver, int index, int slotsCount) throws FastPathBailoutException {
+        static Object getIndexedSlotValue(Node inliningTarget, InlinedBranchProfile initProfile, PythonObject receiver, int index, int slotsCount,
+                        com.oracle.graal.python.runtime.nativeaccess.NativeSlotNodes.ReadSlotNode readSlot) throws FastPathBailoutException {
+            /*
+             * The profile in readSlot cuts whichever of the two branches this site
+             * has not seen; otherwise the result is a phi of a (virtual) in-flight object from the
+             * native branch and a Java slot value, and escape analysis materializes the object.
+             */
+            if (readSlot.profileNative(receiver instanceof com.oracle.graal.python.builtins.objects.object.PNativeLayoutObject n && n.getSlotsPtr() != 0)) {
+                Object v = readSlot.execute((com.oracle.graal.python.builtins.objects.object.PNativeLayoutObject) receiver, index);
+                if (v != null) {
+                    return v;
+                }
+                throw FastPathBailoutException.INSTANCE;
+            }
             Object[] slots = GetOrCreateIndexedSlots.executeKnownCount(inliningTarget, initProfile, receiver, slotsCount);
             Object value = slots[index];
             if (value != null) {
@@ -2614,10 +2627,11 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         @Cached("indexedSlotDescriptor.getIndex()") int index,
                         @Cached("getTypeStableAssumption(cachedShape)") Assumption typeStableAssumption,
                         @Cached("getIndexedSlotsCount(cachedShape)") int slotsCount,
-                        @Exclusive @Cached InlinedBranchProfile initProfile) throws FastPathBailoutException, UnexpectedResultException, InvalidAssumptionException {
+                        @Exclusive @Cached InlinedBranchProfile initProfile,
+                        @Exclusive @Cached com.oracle.graal.python.runtime.nativeaccess.NativeSlotNodes.ReadSlotNode readSlot) throws FastPathBailoutException, UnexpectedResultException, InvalidAssumptionException {
             assert !shouldInternConstant(key) || isInterned(key);
             checkAssumption(typeStableAssumption);
-            Object value = getIndexedSlotValue(inliningTarget, initProfile, receiver, index, slotsCount);
+            Object value = getIndexedSlotValue(inliningTarget, initProfile, receiver, index, slotsCount, readSlot);
             if (value instanceof Integer integer) {
                 return integer;
             }
@@ -2637,10 +2651,11 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         @Cached("indexedSlotDescriptor.getIndex()") int index,
                         @Cached("getTypeStableAssumption(cachedShape)") Assumption typeStableAssumption,
                         @Cached("getIndexedSlotsCount(cachedShape)") int slotsCount,
-                        @Exclusive @Cached InlinedBranchProfile initProfile) throws FastPathBailoutException, InvalidAssumptionException {
+                        @Exclusive @Cached InlinedBranchProfile initProfile,
+                        @Exclusive @Cached com.oracle.graal.python.runtime.nativeaccess.NativeSlotNodes.ReadSlotNode readSlot) throws FastPathBailoutException, InvalidAssumptionException {
             assert !shouldInternConstant(key) || isInterned(key);
             checkAssumption(typeStableAssumption);
-            return getIndexedSlotValue(inliningTarget, initProfile, receiver, index, slotsCount);
+            return getIndexedSlotValue(inliningTarget, initProfile, receiver, index, slotsCount, readSlot);
         }
 
         @Specialization(guards = {
@@ -2758,10 +2773,51 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
                         @Cached("getTypeStableAssumption(cachedPythonClass)") Assumption typeStableAssumption,
                         @Cached DynamicObject.PutNode putNode) {
             assert !shouldInternConstant(key) || isInterned(key);
+            com.oracle.graal.python.runtime.nativeaccess.NativeInstance.pinIfNative(value);
             putNode.execute(receiver, key, value);
         }
 
-        @Specialization(replaces = "doInstanceValue")
+        static IndexedSlotDescriptor getIndexedSlotDescriptorForStore(Shape cachedShape, TruffleString key) {
+            Object type = cachedShape.getDynamicType();
+            if (!(type instanceof PythonClass klass) || !hasObjectSetattro(klass.getTpSlots())) {
+                return null;
+            }
+            Object value = LookupAttributeInMRONode.lookupSlowPathNoSideEffects(klass, key);
+            return value instanceof IndexedSlotDescriptor descriptor ? descriptor : null;
+        }
+
+        /**
+         * Slot store fast path (mirrors GetAttribute.doIndexedSlotDescriptor), so
+         * that a store into a slot is inlined with a constant index for both Java and native
+         * instances.
+         */
+        @Specialization(guards = {
+                        "indexedSlotDescriptor != null", "isValidDescriptor(cachedShape, indexedSlotDescriptor)", //
+                        "cachedShape.check(receiver)"}, //
+                        assumptions = "typeStableAssumption", //
+                        limit = "3")
+        static void doIndexedSlotDescriptor(TruffleString key, Object value, PythonObject receiver,
+                        @Bind Node inliningTarget,
+                        @Cached("receiver.getShape()") Shape cachedShape,
+                        @Cached("getIndexedSlotDescriptorForStore(cachedShape, key)") IndexedSlotDescriptor indexedSlotDescriptor,
+                        @Cached("indexedSlotDescriptor.getIndex()") int index,
+                        @Cached("getTypeStableAssumption(cachedShape)") Assumption typeStableAssumption,
+                        @Cached("getIndexedSlotsCount(cachedShape)") int slotsCount,
+                        @Exclusive @Cached InlinedBranchProfile initProfile,
+                        @Exclusive @Cached com.oracle.graal.python.runtime.nativeaccess.NativeSlotNodes.WriteSlotNode writeSlot) {
+            assert !shouldInternConstant(key) || isInterned(key);
+            if (receiver instanceof com.oracle.graal.python.builtins.objects.object.PNativeLayoutObject n) {
+                if (n.getSlotsPtr() != 0) {
+                    writeSlot.execute(n, index, value);
+                    return;
+                }
+            } else {
+                com.oracle.graal.python.runtime.nativeaccess.NativeInstance.pinIfNative(value);
+            }
+            GetOrCreateIndexedSlots.executeKnownCount(inliningTarget, initProfile, receiver, slotsCount)[index] = value;
+        }
+
+        @Specialization(replaces = {"doInstanceValue", "doIndexedSlotDescriptor"})
         public static void doIt(VirtualFrame frame,
                         TruffleString key,
                         Object value,
@@ -2954,7 +3010,12 @@ public abstract class PBytecodeDSLRootNode extends PRootNode implements Bytecode
         @Specialization
         public static PList perform(Object[] array,
                         @Bind PBytecodeDSLRootNode rootNode) {
-            SequenceStorage storage = new ObjectSequenceStorage(PythonUtils.arrayCopyOf(array, array.length));
+            // An all-None constant list is pointer-aware once an opt-in class exists
+            SequenceStorage storage = com.oracle.graal.python.runtime.nativeaccess.NativeInstance.NO_CLASSES.isValid() ? null
+                            : com.oracle.graal.python.runtime.sequence.storage.InstPtrSequenceStorage.tryCreate(array, array.length, array.length);
+            if (storage == null) {
+                storage = new ObjectSequenceStorage(PythonUtils.arrayCopyOf(array, array.length));
+            }
             return PFactory.createList(rootNode.getLanguage(), storage);
         }
     }

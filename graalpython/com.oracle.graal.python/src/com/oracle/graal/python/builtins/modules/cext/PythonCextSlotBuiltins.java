@@ -523,7 +523,7 @@ public final class PythonCextSlotBuiltins {
                         @Cached CExtNodes.EnsurePythonObjectNode ensureNode) {
             Object promotedValue = read.execute(inliningTarget, object, key, null);
             if (promotedValue == null) {
-                promotedValue = ensureNode.execute(context, value, false);
+                promotedValue = com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(context, ensureNode.execute(context, value, false));
                 if (promotedValue == value) {
                     return value;
                 }

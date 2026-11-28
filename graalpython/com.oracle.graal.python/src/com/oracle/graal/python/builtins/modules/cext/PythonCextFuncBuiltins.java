@@ -98,7 +98,7 @@ public final class PythonCextFuncBuiltins {
         if (ref == null) {
             return null;
         }
-        Object promotedRef = EnsurePythonObjectNode.executeUncached(PythonContext.get(null), ref, false);
+        Object promotedRef = EnsurePythonObjectNode.promoteBorrowedString(PythonContext.get(null), EnsurePythonObjectNode.executeUncached(PythonContext.get(null), ref, false));
         if (promotedRef != ref) {
             cell.setRef(promotedRef);
         }
@@ -220,7 +220,7 @@ public final class PythonCextFuncBuiltins {
                 module = PNone.NONE;
             }
         }
-        Object promotedModule = EnsurePythonObjectNode.executeUncached(PythonContext.get(null), module, false);
+        Object promotedModule = EnsurePythonObjectNode.promoteBorrowedString(PythonContext.get(null), EnsurePythonObjectNode.executeUncached(PythonContext.get(null), module, false));
         WriteAttributeToObjectNode.getUncached().execute(function, T___MODULE__, promotedModule);
         return ToNativeBorrowedNode.executeUncached(promotedModule);
     }
