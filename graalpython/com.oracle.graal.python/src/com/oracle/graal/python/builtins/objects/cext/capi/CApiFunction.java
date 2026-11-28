@@ -849,6 +849,7 @@ public final class CApiFunction {
     @CApiBuiltin(name = "PyThread_exit_thread", ret = Void, args = {}, call = CImpl)
     @CApiBuiltin(name = "PyThread_get_key_value", ret = Pointer, args = {Int}, call = CImpl)
     @CApiBuiltin(name = "PyThread_get_stacksize", ret = SIZE_T, args = {}, call = NotImplemented)
+    @CApiBuiltin(name = "PyThread_get_thread_ident", ret = UNSIGNED_LONG, args = {}, call = CImpl)
     @CApiBuiltin(name = "PyThread_get_thread_native_id", ret = UNSIGNED_LONG, args = {}, call = CImpl)
     @CApiBuiltin(name = "PyThread_init_thread", ret = Void, args = {}, call = CImpl)
     @CApiBuiltin(name = "PyThread_set_key_value", ret = Int, args = {Int, Pointer}, call = CImpl)

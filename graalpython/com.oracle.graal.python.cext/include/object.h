@@ -319,15 +319,42 @@ _Py_IsOwnedByCurrentThread(PyObject *ob)
 #endif
 
 PyAPI_FUNC(Py_ssize_t) Py_REFCNT(PyObject *ob);
+// GraalPy change: inline like Py_TYPE: a native object (no handle tag, bit 63) and a stub
+// (tag cleared) are read directly; tagged ints (bit 62) and floats (bit 61) are immortal. The exported
+// function Py_REFCNT stays for the ABI and for non-C callers (it does the same, plus a debug-mode check).
+static inline Py_ssize_t _GraalPy_REFCNT_inline(PyObject *ob) {
+    uint64_t bits = (uint64_t)(uintptr_t)ob;
+    if (!(bits & ((uint64_t)1 << 63))) {
+        return ob->ob_refcnt;
+    }
+    if (bits & (((uint64_t)1 << 62) | ((uint64_t)1 << 61))) {
+        return _Py_IMMORTAL_REFCNT;
+    }
+    return ((PyObject *)(uintptr_t)(bits & ~((uint64_t)1 << 63)))->ob_refcnt;
+}
 #if !defined(Py_LIMITED_API) || Py_LIMITED_API+0 < 0x030b0000
-#  define Py_REFCNT(ob) Py_REFCNT(_PyObject_CAST(ob))
+#  define Py_REFCNT(ob) _GraalPy_REFCNT_inline(_PyObject_CAST(ob))
 #endif
 
 
 // GraalPy public API, mainly for non-C languages that can't use macros
 PyAPI_FUNC(PyTypeObject*) GraalPy_TYPE(PyObject *ob);
 // bpo-39573: The Py_SET_TYPE() function must be used to set an object type.
+PyAPI_DATA(PyTypeObject) PyLong_Type;
+PyAPI_DATA(PyTypeObject) PyFloat_Type;
 static inline PyTypeObject* Py_TYPE(PyObject *ob) {
+    // GraalPy change: a native object (no handle tag, bit 63) is read directly; tagged ints
+    // (bit 62) and floats (bit 61) have fixed types (see graalpy/handles.h and GraalPy_TYPE)
+    uint64_t bits = (uint64_t)(uintptr_t)ob;
+    if (!(bits & ((uint64_t)1 << 63))) {
+        return ob->ob_type;
+    }
+    if (bits & ((uint64_t)1 << 62)) {
+        return &PyLong_Type;
+    }
+    if (bits & ((uint64_t)1 << 61)) {
+        return &PyFloat_Type;
+    }
     return GraalPy_TYPE(ob);
 }
 #if !defined(Py_LIMITED_API) || Py_LIMITED_API+0 < 0x030b0000

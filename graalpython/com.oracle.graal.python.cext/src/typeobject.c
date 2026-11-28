@@ -2524,12 +2524,32 @@ type_is_subtype_base_chain(PyTypeObject *a, PyTypeObject *b)
     return (b == &PyBaseObject_Type);
 }
 
+/* GraalPy change: the MRO walk calls GraalPyTuple_GET_ITEM; kept out of line so that the
+   common paths of is_subtype_with_mro need no stack frame. */
+static int __attribute__((noinline))
+graalpy_mro_contains(PyObject *a_mro, PyTypeObject *b)
+{
+    Py_ssize_t i, n;
+    assert(PyTuple_Check(a_mro));
+    n = PyTuple_GET_SIZE(a_mro);
+    for (i = 0; i < n; i++) {
+        if (PyTuple_GET_ITEM(a_mro, i) == (PyObject *)b) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int
 is_subtype_with_mro(PyObject *a_mro, PyTypeObject *a, PyTypeObject *b)
 {
     // GraalPy change: add fast-paths for common builtin types
     if (a == b) {
         return 1;
+    } else if (b == &PyFloat_Type) {
+        // Float has no subclass flag; its layout differs from object's, so every subtype has it
+        // in its tp_base chain (PyFloat_Check)
+        return type_is_subtype_base_chain(a, b);
     } else if (b == &PyType_Type) {
         return PyType_FastSubclass(a, Py_TPFLAGS_TYPE_SUBCLASS);
     } else if (b == &PyLong_Type) {
@@ -2547,20 +2567,19 @@ is_subtype_with_mro(PyObject *a_mro, PyTypeObject *a, PyTypeObject *b)
     } else if ((PyObject *)b == PyExc_BaseException) {
         return PyType_FastSubclass(a, Py_TPFLAGS_BASE_EXC_SUBCLASS);
     }
+    // GraalPy change: if b's instance layout differs from its base's (b is its own
+    // "solid base"), every subtype of b has b in its tp_base chain (best_base/solid_base rules), so the
+    // chain answers without walking the MRO tuple.
+    PyTypeObject *b_base = b->tp_base;
+    if (a_mro != NULL && b_base != NULL &&
+            (b->tp_basicsize != b_base->tp_basicsize || b->tp_itemsize != b_base->tp_itemsize)) {
+        return type_is_subtype_base_chain(a, b);
+    }
     int res;
     if (a_mro != NULL) {
         /* Deal with multiple inheritance without recursion
            by walking the MRO tuple */
-        Py_ssize_t i, n;
-        assert(PyTuple_Check(a_mro));
-        n = PyTuple_GET_SIZE(a_mro);
-        res = 0;
-        for (i = 0; i < n; i++) {
-            if (PyTuple_GET_ITEM(a_mro, i) == (PyObject *)b) {
-                res = 1;
-                break;
-            }
-        }
+        res = graalpy_mro_contains(a_mro, b);
     }
     else {
         /* a is not completely initialized yet; follow tp_base */

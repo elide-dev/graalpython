@@ -162,6 +162,22 @@ public abstract class GetDictIfExistsNode extends PNodeWithContext {
             }
         }
 
+        /*
+         * _PyObject_GetDictPtr returns NULL when the type has no managed dict and
+         * tp_dictoffset == 0 (most extension types); decide that from the native type struct
+         * instead of a downcall on every attribute lookup.
+         */
+        long typePtr = com.oracle.graal.python.builtins.objects.cext.structs.CStructAccess.readPtrField(object.getPtr(),
+                        com.oracle.graal.python.builtins.objects.cext.structs.CFields.PyObject__ob_type);
+        if (!com.oracle.graal.python.builtins.objects.cext.capi.transitions.CApiTransitions.HandlePointerConverter.pointsToPyHandleSpace(typePtr) &&
+                        (com.oracle.graal.python.builtins.objects.cext.structs.CStructAccess.readLongField(typePtr,
+                                        com.oracle.graal.python.builtins.objects.cext.structs.CFields.PyTypeObject__tp_flags) &
+                                        com.oracle.graal.python.builtins.objects.type.TypeFlags.MANAGED_DICT) == 0 &&
+                        com.oracle.graal.python.builtins.objects.cext.structs.CStructAccess.readLongField(typePtr,
+                                        com.oracle.graal.python.builtins.objects.cext.structs.CFields.PyTypeObject__tp_dictoffset) == 0) {
+            return null;
+        }
+
         assert EnsurePythonObjectNode.doesNotNeedPromotion(object);
         NativeFunctionPointer callable = CApiContext.getNativeSymbol(inliningTarget, FUN_PY_OBJECT_GET_DICT_PTR);
         try {

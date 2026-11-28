@@ -79,6 +79,28 @@ PyThread_init_thread(void)
 #   error "Require native threads. See https://bugs.python.org/issue31370"
 #endif
 
+// GraalPy change: PyThread_get_thread_ident must equal _thread.get_ident(), the Java thread id. It is
+// fixed for the life of the Java thread bound to this OS thread, so it is cached in this thread's
+// native PyThreadState ('thread_id', zeroed at allocation). Its validity is the struct's: Java frees
+// the struct and clears 'tstate_current' when it detaches the thread (GraalPyPrivate_BeforeThreadDetach),
+// and a re-attach allocates a fresh (zeroed) struct. Without a native thread state (thread never
+// attached, or C API not yet initialized on it) every call asks Java and nothing is cached.
+unsigned long
+PyThread_get_thread_ident(void)
+{
+    PyThreadState *ts = tstate_current;
+    if (LIKELY(ts != NULL)) {
+        unsigned long id = ts->thread_id;
+        if (LIKELY(id != 0)) {
+            return id;
+        }
+        id = GraalPyPrivate_Thread_GetIdent();
+        ts->thread_id = id;
+        return id;
+    }
+    return GraalPyPrivate_Thread_GetIdent();
+}
+
 
 #if 0 // GraalPy change
 /* return the current thread stack size */
