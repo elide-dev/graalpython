@@ -189,7 +189,16 @@ public final class IteratorBuiltins extends PythonBuiltins {
             return stopIteration(self);
         }
 
-        @Specialization(guards = "!self.isExhausted()")
+        @Specialization(guards = {"!self.isExhausted()", "self.isLongMode()"})
+        static Object nextLong(Node inliningTarget, PBigRangeIterator self,
+                        @Exclusive @Cached InlinedConditionProfile profile) {
+            if (profile.profile(inliningTarget, self.hasNextLong())) {
+                return self.nextLong();
+            }
+            return stopIteration(self);
+        }
+
+        @Specialization(guards = {"!self.isExhausted()", "!self.isLongMode()"})
         static Object next(PBigRangeIterator self,
                         @Bind PythonLanguage language) {
             if (self.hasNextBigInt()) {
