@@ -251,6 +251,20 @@ public final class NativeStr {
         return 0;
     }
 
+    /**
+     * Called when the borrowed stack is released down to {@code mark}: the remembered struct is no
+     * longer held there and may be freed. Without this, a later struct allocated at the same address
+     * and pushed at the same stack index would pass the check in {@link #lastBorrowed} and be
+     * handed out for {@code s} although it holds a different string.
+     */
+    public static void forgetBorrowedAbove(long mark) {
+        if (lastIdx >= mark) {
+            lastStr = null;
+            lastPtr = 0;
+            lastIdx = -1;
+        }
+    }
+
     public static void setLastBorrowed(long st, TruffleString s, long p) {
         lastStr = s;
         lastPtr = p;

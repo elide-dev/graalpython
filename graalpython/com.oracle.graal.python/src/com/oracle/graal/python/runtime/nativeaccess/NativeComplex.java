@@ -460,6 +460,7 @@ public final class NativeComplex {
                 }
             }
             UNSAFE.putLong(st + S_BTOP, top);
+            NativeStr.forgetBorrowedAbove(mark);
         }
     }
 }
