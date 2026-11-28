@@ -275,7 +275,7 @@ diff --git a/src/ffi/pydictref.rs b/src/ffi/pydictref.rs
 index 4a6c6cf..238b192 100644
 --- a/src/ffi/pydictref.rs
 +++ b/src/ffi/pydictref.rs
-@@ -19,7 +19,7 @@ impl PartialEq for PyDictRef {
+@@ -19,7 +19,7 @@
      }
  }
  
@@ -284,22 +284,29 @@ index 4a6c6cf..238b192 100644
  #[inline]
  fn reverse_pydict_incref(key: *mut pyo3_ffi::PyObject, value: *mut pyo3_ffi::PyObject) {
      unsafe {
-@@ -32,13 +32,13 @@ fn reverse_pydict_incref(key: *mut pyo3_ffi::PyObject, value: *mut pyo3_ffi::PyO
-     }
- }
- 
--#[cfg(Py_GIL_DISABLED)]
-+#[cfg(any(Py_GIL_DISABLED, not(CPython)))]
- #[inline]
- fn reverse_pydict_incref(_: *mut pyo3_ffi::PyObject, value: *mut pyo3_ffi::PyObject) {
+@@ -38,10 +38,21 @@
      unsafe { crate::ffi::Py_DECREF(value) }
  }
  
 -#[cfg(not(Py_3_12))]
-+#[cfg(all(CPython, not(Py_3_12)))]
++// GraalPy: get_unicode_key returns a new reference (no key cache), and PyDict_SetItem
++// takes its own references, so release both the key and the value.
++#[cfg(not(CPython))]
  #[inline]
  fn reverse_pydict_incref(key: *mut pyo3_ffi::PyObject, value: *mut pyo3_ffi::PyObject) {
      unsafe {
++        crate::ffi::Py_DECREF(key);
++        crate::ffi::Py_DECREF(value);
++    }
++}
++
++#[cfg(all(CPython, not(Py_3_12)))]
++#[inline]
++fn reverse_pydict_incref(key: *mut pyo3_ffi::PyObject, value: *mut pyo3_ffi::PyObject) {
++    unsafe {
+         (*key).ob_refcnt -= 1;
+         (*value).ob_refcnt -= 1;
+     }
 diff --git a/src/ffi/pystrref/object.rs b/src/ffi/pystrref/object.rs
 index 69069fa..bc44e7c 100644
 --- a/src/ffi/pystrref/object.rs

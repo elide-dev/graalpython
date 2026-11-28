@@ -3488,7 +3488,10 @@ PyUnicode_Decode(const char *s,
     if (!mv) {
         return NULL;
     }
-	return GraalPyPrivate_Unicode_Decode(mv, encoding, errors != NULL ? errors : "strict");
+    // GraalPy change: the upcall borrows 'mv' (NativeToPythonNode); release the temporary (it leaked before)
+    PyObject *result = GraalPyPrivate_Unicode_Decode(mv, encoding, errors != NULL ? errors : "strict");
+    Py_DECREF(mv);
+    return result;
 }
 
 #if 0 // GraalPy change

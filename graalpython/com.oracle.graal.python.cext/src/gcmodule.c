@@ -2888,7 +2888,8 @@ _PyObject_GC_Resize(PyVarObject *op, Py_ssize_t nitems)
 void
 PyObject_GC_Del(void *op)
 {
-    size_t presize = _PyType_PreHeaderSize(Py_TYPE(op)); // GraalPy change
+    PyTypeObject *tp = Py_TYPE(op); // GraalPy change
+    size_t presize = _PyType_PreHeaderSize(tp); // GraalPy change
     PyGC_Head *g = AS_GC(op);
     if (_PyObject_GC_IS_TRACKED(op)) {
         gc_list_remove(g);
@@ -2901,6 +2902,32 @@ PyObject_GC_Del(void *op)
         }
         PyErr_SetRaisedException(exc);
 #endif
+    }
+    /* GraalPy change: release the instance dict that lives in the pre-header.
+     *
+     * CPython drops this reference in 'subtype_dealloc' (or in the type's own
+     * tp_dealloc via 'PyObject_ClearManagedDict'). On GraalPy, a managed
+     * (Python-level) subclass of a native type does not get 'subtype_dealloc'
+     * but inherits the tp_dealloc of its native base (see 'type_new_alloc' and
+     * 'CExtNodes.lookupNativeMemberInMRO'), which knows nothing about the
+     * subclass' __dict__, and 'PyObject_ClearManagedDict' is a no-op. So this
+     * is the last point where the reference can be dropped. Otherwise the dict
+     * keeps 'ob_refcnt > MANAGED_REFCNT' forever, its handle table reference
+     * stays strong and the dict, as well as everything reachable from it, is
+     * never collected.
+     *
+     * For the usual managed dict this is at most an upcall that makes the
+     * handle table reference weak, but '__dict__' may also be a dict subclass
+     * with native backing, whose final DECREF runs its tp_dealloc; that is why
+     * the pointer is cleared before the DECREF.
+     */
+    if (_PyType_HasFeature(tp, Py_TPFLAGS_MANAGED_DICT)) {
+        PyManagedDictPointer *managed_dict = _PyObject_ManagedDictPointer((PyObject *)op);
+        PyObject *dict = (PyObject *)managed_dict->dict;
+        if (dict != NULL) {
+            managed_dict->dict = NULL;
+            Py_DECREF(dict);
+        }
     }
     GCState *gcstate = get_gc_state();
     if (gcstate->generations[0].count > 0) {
