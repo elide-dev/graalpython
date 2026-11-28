@@ -161,6 +161,8 @@ public abstract class GilNode extends Node {
         @Override
         public final void close() {
             PythonContext context = PythonContext.get(this);
+            // Java ran inside an upcall (slot/method closures use this)
+            com.oracle.graal.python.builtins.objects.cext.capi.CApiEpoch.javaRan(context);
             if (context.ownsGil()) {
                 // we are forgiving in this usage for cases where the gil is released and we're
                 // exiting with an exception

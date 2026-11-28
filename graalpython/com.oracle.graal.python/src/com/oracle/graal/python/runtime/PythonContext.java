@@ -765,6 +765,9 @@ public final class PythonContext extends Python3Core {
     private final IDUtils idUtils = new IDUtils();
 
     @CompilationFinal private SecureRandom secureRandom;
+
+    /** Address of the C API "Java ran" epoch word (see CApiEpoch), 0 until C asks for it. */
+    @CompilationFinal private long capiEpochAddress;
     private InitializationEntropySource initializationEntropySource;
 
     // Equivalent of _Py_HashSecret
@@ -2207,6 +2210,8 @@ public final class PythonContext extends Python3Core {
     public void ensureGilAfterFailure() {
         if (!ownsGil()) {
             globalInterpreterLock.lock();
+            // Another thread may have run Python code while we waited
+            com.oracle.graal.python.builtins.objects.cext.capi.CApiEpoch.javaRan(this);
         }
     }
 
@@ -2242,7 +2247,12 @@ public final class PythonContext extends Python3Core {
     boolean tryAcquireGil() {
         try {
             // Using tryLock with empty timeout to ensure fairness
-            return globalInterpreterLock.tryLock(0, TimeUnit.SECONDS);
+            boolean acquired = globalInterpreterLock.tryLock(0, TimeUnit.SECONDS);
+            if (acquired) {
+                // Another thread may have run Python code since we held the GIL
+                com.oracle.graal.python.builtins.objects.cext.capi.CApiEpoch.javaRan(this);
+            }
+            return acquired;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return false;
@@ -2258,6 +2268,8 @@ public final class PythonContext extends Python3Core {
     void acquireGil() throws InterruptedException {
         assert !ownsGil() : dumpStackOnAssertionHelper("trying to acquire the GIL more than once");
         globalInterpreterLock.lockInterruptibly();
+        // Another thread may have run Python code while we waited
+        com.oracle.graal.python.builtins.objects.cext.capi.CApiEpoch.javaRan(this);
     }
 
     static String dumpStackOnAssertionHelper(String msg) {
@@ -2568,6 +2580,21 @@ public final class PythonContext extends Python3Core {
         assert cApiState != CApiState.FAILED;
         assert cApiState != CApiState.CANNOT_IMPORT;
         cApiState = state;
+    }
+
+    /** Address of the C API "Java ran" epoch word; allocated on first use. */
+    public long getCApiEpochAddress() {
+        long p = capiEpochAddress;
+        if (p == 0) {
+            CompilerDirectives.transferToInterpreterAndInvalidate();
+            p = capiEpochAddress = com.oracle.graal.python.builtins.objects.cext.capi.CApiEpoch.allocate();
+        }
+        return p;
+    }
+
+    /** The epoch word's address if it exists, else 0 (no allocation). */
+    public long peekCApiEpochAddress() {
+        return capiEpochAddress;
     }
 
     public CApiContext getCApiContext() {
