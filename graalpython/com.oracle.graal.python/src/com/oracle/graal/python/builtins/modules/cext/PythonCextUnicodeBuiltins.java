@@ -263,7 +263,16 @@ public final class PythonCextUnicodeBuiltins {
                         @Cached StringBuiltins.StrNewNode strNode,
                         @SuppressWarnings("unused") @Shared @Cached GetClassNode getClassNode,
                         @SuppressWarnings("unused") @Shared @Cached IsSubtypeNode isSubtypeNode) {
-            return strNode.executeWith(obj);
+            Object result = strNode.executeWith(obj);
+            if (result instanceof TruffleString ts) {
+                /*
+                 * As in CPython, a str subclass instance gives a new exact str object. The bare
+                 * Java string may be the one another str object holds, and a bare string keeps its
+                 * identity across C (native str copies), so wrap it in a fresh object.
+                 */
+                return PFactory.createString(PythonLanguage.get(inliningTarget), ts);
+            }
+            return result;
         }
 
         @Specialization(guards = {"!isStringSubtype(inliningTarget, obj, getClassNode, isSubtypeNode)"})
