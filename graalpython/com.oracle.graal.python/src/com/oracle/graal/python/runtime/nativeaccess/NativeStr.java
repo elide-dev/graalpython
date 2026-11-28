@@ -65,12 +65,20 @@ import com.oracle.truffle.api.strings.TruffleString;
  *
  * <p>
  * The padding word @36 is ours: bit 31 marks a struct made by this scheme (by Java or by C); the
- * low bits hold 1 + the index of an entry of a small ring that maps the struct back to the Java
- * string it was made from or converted to. The ring keeps the last {@link #RING_SIZE} crossings.
- * An entry is valid for a struct only if it still names that struct's address; a struct is
- * freed and re-made only with a fresh word, so a stale entry is never followed. The ring gives
- * {@code f(s) is s} for a string that C returns while its struct lives, and saves the second copy
- * when C hands the same struct back to Java.
+ * low bits hold 1 + the index of an entry of a small ring that maps the struct to a Java object:
+ * the Java string it was copied from, or the str object ({@code PString}) Java made when it read
+ * the struct. The ring keeps the last {@link #RING_SIZE} crossings. An entry is valid for a struct
+ * only if it still names that struct's address; a struct is freed and re-made only with a fresh
+ * word, so a stale entry is never followed.
+ * </p>
+ *
+ * <p>
+ * Identity: Java reads a struct as an exact str object, made once per struct and remembered in the
+ * ring, so the same struct read again (the key and the value of one {@code PyDict_SetItem}, then the
+ * element of an argument tuple) is the same object while its entry lives. A str that C stores into
+ * a container is therefore an object the container keeps, and C reading it back gets that object's
+ * stable stub. A bare Java string passed to C and handed back is an equal, new object
+ * ({@code f(s) is s} is false), as for any str that crosses through a stub.
  * </p>
  *
  * Single-threaded: callers hold the GIL.
@@ -112,7 +120,7 @@ public final class NativeStr {
     public static final String[] COUNTER_NAMES = {"str_java_to_c", "str_c_to_java", "str_ring_hit", "str_java_free", "str_c_alloc", "str_c_free", "str_java_bytes", ""};
 
     public static final int RING_SIZE = 4096;   // power of two
-    private static final TruffleString[] RING_STR = new TruffleString[RING_SIZE];
+    private static final Object[] RING_OBJ = new Object[RING_SIZE];
     private static final long[] RING_PTR = new long[RING_SIZE];
     private static int ringCursor;
 
@@ -295,21 +303,24 @@ public final class NativeStr {
         return true;
     }
 
-    /** Remembers that struct {@code p} holds the value of {@code s}. */
-    public static void remember(long p, TruffleString s) {
+    /**
+     * Remembers that struct {@code p} holds the value of {@code o}: the Java string it was copied
+     * from, or the str object Java made when it read the struct.
+     */
+    public static void remember(long p, Object o) {
         int k = ringCursor;
         ringCursor = (k + 1) & (RING_SIZE - 1);
-        RING_STR[k] = s;
+        RING_OBJ[k] = o;
         RING_PTR[k] = p;
         UNSAFE.putInt(p + OFF_JSLOT, MARK | (k + 1));
     }
 
-    /** The Java string struct {@code p} was made from or converted to, if still known; else null. */
-    public static TruffleString recall(long p) {
+    /** The object struct {@code p} was made from or converted to, if still known; else null. */
+    public static Object recall(long p) {
         int k = (UNSAFE.getInt(p + OFF_JSLOT) & SLOT_MASK) - 1;
         if (CompilerDirectives.injectBranchProbability(CompilerDirectives.LIKELY_PROBABILITY, k >= 0 && k < RING_SIZE) && RING_PTR[k] == p) {
             count(C_RING_HIT, 1);
-            return RING_STR[k];
+            return RING_OBJ[k];
         }
         return null;
     }

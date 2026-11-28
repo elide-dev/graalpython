@@ -42,8 +42,11 @@ package com.oracle.graal.python.builtins.objects.cext.capi.transitions;
 
 import static com.oracle.graal.python.util.PythonUtils.TS_ENCODING;
 
+import com.oracle.graal.python.PythonLanguage;
+import com.oracle.graal.python.builtins.objects.str.PString;
 import com.oracle.graal.python.runtime.nativeaccess.NativeComplex;
 import com.oracle.graal.python.runtime.nativeaccess.NativeStr;
+import com.oracle.graal.python.runtime.object.PFactory;
 import com.oracle.truffle.api.CompilerAsserts;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.GenerateCached;
@@ -139,25 +142,43 @@ public final class NativeStrNodes {
     @GenerateUncached
     public abstract static class NativeToStrNode extends Node {
 
-        public abstract TruffleString execute(Node inliningTarget, long p, boolean transfer);
+        public abstract Object execute(Node inliningTarget, long p, boolean transfer);
 
+        /*
+         * The result is always an exact str object (PString), made once per struct and remembered
+         * in the ring: C code that interns strings in a dict (look up, insert if missing, return the
+         * dict's value) must hand Python the object the dict holds, and a bare Java string stored
+         * into a container would get a different object once C borrows it from there.
+         */
         @Specialization
-        static TruffleString doIt(Node inliningTarget, long p, boolean transfer,
+        static Object doIt(Node inliningTarget, long p, boolean transfer,
                         @Cached InlinedConditionProfile hitProfile,
+                        @Cached InlinedConditionProfile copyProfile,
                         @Cached(inline = false) TruffleString.FromNativePointerWithCompactionUTF32Node fromNativeNode) {
-            TruffleString s = NativeStr.recall(p);
-            if (!hitProfile.profile(inliningTarget, s != null)) {
-                int kind = NativeStr.kind(p);
-                long length = NativeStr.length(p);
-                TruffleString.CompactionLevel level = kind == 1 ? TruffleString.CompactionLevel.S1 : kind == 2 ? TruffleString.CompactionLevel.S2 : TruffleString.CompactionLevel.S4;
-                s = fromNativeNode.execute(NativeStr.data(p), 0, (int) (length * kind), level, true);
-                NativeStr.remember(p, s);
-                NativeStr.count(NativeStr.C_C_TO_JAVA, 1);
+            Object known = NativeStr.recall(p);
+            Object result;
+            if (hitProfile.profile(inliningTarget, known instanceof PString)) {
+                result = known;
+            } else {
+                TruffleString s;
+                if (copyProfile.profile(inliningTarget, known instanceof TruffleString)) {
+                    // a copy Java made of this Java string
+                    s = (TruffleString) known;
+                } else {
+                    int kind = NativeStr.kind(p);
+                    long length = NativeStr.length(p);
+                    TruffleString.CompactionLevel level = kind == 1 ? TruffleString.CompactionLevel.S1 : kind == 2 ? TruffleString.CompactionLevel.S2 : TruffleString.CompactionLevel.S4;
+                    s = fromNativeNode.execute(NativeStr.data(p), 0, (int) (length * kind), level, true);
+                    NativeStr.count(NativeStr.C_C_TO_JAVA, 1);
+                }
+                PString str = PFactory.createString(PythonLanguage.get(inliningTarget), s);
+                NativeStr.remember(p, str);
+                result = str;
             }
             if (transfer) {
                 NativeStr.decref(p);
             }
-            return s;
+            return result;
         }
     }
 }
