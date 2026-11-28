@@ -185,7 +185,9 @@ PyList_SetItem(PyObject *op, Py_ssize_t i,
 static inline GraalPyVarObject *
 graalpy_list_stub(PyObject *op)
 {
-    if (points_to_py_handle_space(op)) {
+    /* Only a real stub (top bits 0b100) has memory: tagged ints (0b11x) and floats (0b101) are also in
+       handle space but are immediates and must not be dereferenced (e.g. PyList_Size(23) must fail). */
+    if (((uint64_t)(uintptr_t) op >> 61) == 4) {
         GraalPyVarObject *s = (GraalPyVarObject *) pointer_to_stub(op);
         PyTypeObject *t = ((PyObject *) s)->ob_type;
         if (t == &PyList_Type || PyType_FastSubclass(t, Py_TPFLAGS_LIST_SUBCLASS)) {
