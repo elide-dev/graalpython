@@ -275,6 +275,7 @@ CAPI_BUILTINS
 }
 
 Py_LOCAL_SYMBOL uint32_t Py_Truffle_Options;
+Py_LOCAL_SYMBOL void graalpy_init_list_slots(void); // listobject.c
 Py_LOCAL_SYMBOL void graalpy_init_dict_mirror(void); // dictobject.c
 
 #undef bool
@@ -603,6 +604,8 @@ PyAPI_FUNC(PyThreadState **) initialize_graal_capi(void **builtin_closures, GCSt
     initialize_builtin_types_and_structs();
     // GraalPy change: PyDict_Next entry mirror ("Java ran" epoch)
     graalpy_init_dict_mirror();
+    // GraalPy change: PyList_Type's sq_length/mp_length read the list stub's mirrored ob_size
+    graalpy_init_list_slots();
     // initialize global variables like '_Py_NoneStruct', etc.
     initialize_globals(tstate);
     initialize_exceptions();

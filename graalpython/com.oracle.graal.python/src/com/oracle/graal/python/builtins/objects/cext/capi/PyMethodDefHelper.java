@@ -108,6 +108,15 @@ public record PyMethodDefHelper(TruffleString name, Object meth, int flags, Truf
                 return kwDefaults[i].getValue();
             }
         }
+        if (cApiContext.getListClearMeth() != NULLPTR && com.oracle.graal.python.builtins.objects.list.ListBuiltins.ListClearNode.class.isAssignableFrom(object.getNodeClass())) {
+            /*
+             * List.clear's ml_meth is a C function: a list whose stub says size 0
+             * returns None without entering Java, anything else calls PyList_Clear (Java).
+             */
+            return NativeFunctionPointer.create(PythonContext.get(null).ensureNativeContext(), cApiContext.getListClearMeth(),
+                            com.oracle.graal.python.annotations.NativeSimpleType.POINTER, com.oracle.graal.python.annotations.NativeSimpleType.POINTER,
+                            com.oracle.graal.python.annotations.NativeSimpleType.POINTER);
+        }
         return PyCFunctionWrapper.createFromBuiltinFunction(cApiContext, object);
     }
 

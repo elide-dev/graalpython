@@ -176,8 +176,123 @@ PyList_SetItem(PyObject *op, Py_ssize_t i,
 }
 
 // GraalPy-additions
+
+/*
+ * A list's native stub is a GraalPyVarObject whose ob_size/ob_item Java keeps valid while the list's
+ * storage is empty (0, NULL) or a native PyObject* array attached to the list (length, array); otherwise ob_size is
+ * -1 and C asks Java (see ListStubMirror.java). Reads below never enter Java when the stub is valid.
+ */
+static inline GraalPyVarObject *
+graalpy_list_stub(PyObject *op)
+{
+    if (points_to_py_handle_space(op)) {
+        GraalPyVarObject *s = (GraalPyVarObject *) pointer_to_stub(op);
+        PyTypeObject *t = ((PyObject *) s)->ob_type;
+        if (t == &PyList_Type || PyType_FastSubclass(t, Py_TPFLAGS_LIST_SUBCLASS)) {
+            return s;
+        }
+    }
+    return NULL;
+}
+
 PyObject **
 GraalPyList_ITEMS(PyObject *op)
 {
+    GraalPyVarObject *s = graalpy_list_stub(op);
+    if (s != NULL && s->ob_item != NULL) {
+        return s->ob_item;
+    }
     return GraalPyPrivate_GET_PyListObject_ob_item(op);
+}
+
+Py_ssize_t
+PyList_Size(PyObject *op)
+{
+    GraalPyVarObject *s = graalpy_list_stub(op);
+    if (s != NULL && s->ob_size >= 0) {
+        return s->ob_size;
+    }
+    return GraalPyPrivate_List_Size(op);
+}
+
+PyObject *
+PyList_GetItem(PyObject *op, Py_ssize_t i)
+{
+    GraalPyVarObject *s = graalpy_list_stub(op);
+    if (s != NULL) {
+        if (s->ob_size < 0) {
+            /* C reads an element: the list's storage becomes a native PyObject* array (as for ob_item) */
+            GraalPyPrivate_GET_PyListObject_ob_item(op);
+        }
+        Py_ssize_t n = s->ob_size;
+        if (n >= 0) {
+            if (!valid_index(i, n)) {
+                PyErr_SetString(PyExc_IndexError, "list index out of range");
+                return NULL;
+            }
+            return s->ob_item[i];
+        }
+    }
+    return GraalPyPrivate_List_GetItem(op, i);
+}
+
+/* PyList_Type's sq_length / mp_length: the stub's ob_size if valid, else the Java slot installed at type init */
+static lenfunc graalpy_list_java_sq_length;
+static lenfunc graalpy_list_java_mp_length;
+
+static Py_ssize_t
+graalpy_list_sq_length(PyObject *op)
+{
+    /* No type test, as CPython's list_length: only a real stub (tag 0b100 in the top bits; tagged ints/floats
+       have no memory) is read; every stub has a zeroed ob_size slot (CApiTransitions), lists keep it valid or -1 */
+    if (((uint64_t)(uintptr_t) op >> 61) == 4) {
+        Py_ssize_t n = ((GraalPyVarObject *) pointer_to_stub(op))->ob_size;
+        if (n >= 0) {
+            return n;
+        }
+    }
+    return graalpy_list_java_sq_length(op);
+}
+
+static Py_ssize_t
+graalpy_list_mp_length(PyObject *op)
+{
+    /* No type test, as CPython's list_length: only a real stub (tag 0b100 in the top bits; tagged ints/floats
+       have no memory) is read; every stub has a zeroed ob_size slot (CApiTransitions), lists keep it valid or -1 */
+    if (((uint64_t)(uintptr_t) op >> 61) == 4) {
+        Py_ssize_t n = ((GraalPyVarObject *) pointer_to_stub(op))->ob_size;
+        if (n >= 0) {
+            return n;
+        }
+    }
+    return graalpy_list_java_mp_length(op);
+}
+
+/* ml_meth of list.clear (METH_NOARGS) as C sees it: an empty list whose stub is valid needs no work (as in CPython);
+   everything else goes to Java through PyList_Clear */
+static PyObject *
+graalpy_list_clear_meth(PyObject *self, PyObject *Py_UNUSED(ignored))
+{
+    /* no type test, as CPython's list_clear (ml_meth is only valid with a list self); a real stub (top bits 0b100)
+       always has a zeroed or valid ob_size slot (CApiTransitions) */
+    if (((uint64_t)(uintptr_t) self >> 61) != 4 || ((GraalPyVarObject *) pointer_to_stub(self))->ob_size != 0) {
+        if (PyList_Clear(self) < 0) {
+            return NULL;
+        }
+    }
+    return Py_None; /* immortal: no reference count change (Py_RETURN_NONE's incref is a no-op for it) */
+}
+
+Py_LOCAL_SYMBOL void
+graalpy_init_list_slots(void)
+{
+    GraalPyPrivate_List_SetClearMeth((void *) graalpy_list_clear_meth);
+    if (PyList_Type.tp_as_sequence != NULL && PyList_Type.tp_as_sequence->sq_length != NULL) {
+        graalpy_list_java_sq_length = PyList_Type.tp_as_sequence->sq_length;
+        PyList_Type.tp_as_sequence->sq_length = graalpy_list_sq_length;
+    }
+    if (PyList_Type.tp_as_mapping != NULL && PyList_Type.tp_as_mapping->mp_length != NULL) {
+        graalpy_list_java_mp_length = PyList_Type.tp_as_mapping->mp_length;
+        PyList_Type.tp_as_mapping->mp_length = graalpy_list_mp_length;
+    }
 }

@@ -202,6 +202,16 @@ public final class CApiContext {
      * {@code PyInterpreterState.gc}.
      */
     private long gcState;
+    /** C implementation of {@code list.clear}'s {@code ml_meth} (0 until C registered it). */
+    private long listClearMeth = NULLPTR;
+
+    public long getListClearMeth() {
+        return listClearMeth;
+    }
+
+    public void setListClearMeth(long ptr) {
+        listClearMeth = ptr;
+    }
 
     /** Same as {@code import.c: extensions} but we don't keep a PDict; just a bare Java HashMap. */
     private final HashMap<Pair<TruffleString, TruffleString>, PythonModule> extensions = new HashMap<>(4);

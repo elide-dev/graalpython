@@ -129,8 +129,9 @@ public final class PythonCextListBuiltins {
         }
     }
 
-    @CApiBuiltin(ret = PyObject, args = {PyObject, Py_ssize_t}, call = Direct, retConversion = ToNativeBorrowedNode.class, argConversions = {NativeToPythonNode.class, long.class})
-    abstract static class PyList_GetItem extends CApiBinaryBuiltinNode {
+    /** Java fallback of the C {@code PyList_GetItem} (lists whose stub is not mirrored, errors). */
+    @CApiBuiltin(ret = PyObject, args = {PyObject, Py_ssize_t}, call = Ignored, retConversion = ToNativeBorrowedNode.class, argConversions = {NativeToPythonNode.class, long.class})
+    abstract static class GraalPyPrivate_List_GetItem extends CApiBinaryBuiltinNode {
 
         @Specialization
         static Object doPList(PList list, long key,
@@ -300,8 +301,9 @@ public final class PythonCextListBuiltins {
      * A pure-C Py_SIZE implementation regressed mixed managed/native/list-subclass workload by
      * about 1.26x.
      */
-    @CApiBuiltin(ret = Py_ssize_t, args = {PyObject}, call = Direct, retConversion = long.class, argConversions = {NativeToPythonNode.class})
-    static long PyList_Size(long opPtr) {
+    /** Java fallback of the C {@code PyList_Size}. */
+    @CApiBuiltin(ret = Py_ssize_t, args = {PyObject}, call = Ignored, retConversion = long.class, argConversions = {NativeToPythonNode.class})
+    static long GraalPyPrivate_List_Size(long opPtr) {
         CApiTiming.enter();
         try {
             Object op = NativeToPythonInternalNode.executeUncached(opPtr, false);
@@ -376,6 +378,14 @@ public final class PythonCextListBuiltins {
                         @Bind Node inliningTarget) {
             throw PRaiseNode.raiseStatic(inliningTarget, SystemError, ErrorMessages.BAD_ARG_TO_INTERNAL_FUNC);
         }
+    }
+
+    /** C registers its list.clear ml_meth once at C API initialization. */
+    @CApiBuiltin(ret = Int, args = {Pointer}, call = Ignored, retConversion = int.class, argConversions = {long.class})
+    @com.oracle.truffle.api.CompilerDirectives.TruffleBoundary
+    static int GraalPyPrivate_List_SetClearMeth(long ptr) {
+        PythonContext.get(null).getCApiContext().setListClearMeth(ptr);
+        return 0;
     }
 
     @CApiBuiltin(ret = INT64_T, args = {PyObject, Pointer}, call = Ignored, retConversion = long.class, argConversions = {NativeToPythonNode.class, long.class})

@@ -149,7 +149,7 @@ public final class PList extends PTupleListBase {
                 }
                 if (newStorage != store) {
                     generalizedProfile.enter(inliningTarget);
-                    store = newStorage;
+                    setSequenceStorage(newStorage);
                 }
             } catch (OverflowException e) {
                 CompilerDirectives.transferToInterpreterAndInvalidate();

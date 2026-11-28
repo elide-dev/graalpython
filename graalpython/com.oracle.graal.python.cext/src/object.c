@@ -3345,6 +3345,14 @@ Py_ssize_t GraalPy_SIZE(PyObject *ob) {
             }
 #endif
         }
+        else if (PyType_FastSubclass(ptr->ob_type, Py_TPFLAGS_LIST_SUBCLASS))
+        {
+            /* List stubs mirror ob_size while the storage is empty or native, else -1 */
+            res = ((GraalPyVarObject *) ptr)->ob_size;
+            if (res < 0) {
+                res = GraalPyPrivate_List_Size(ob);
+            }
+        }
         else
         {
             res = GraalPyPrivate_Get_PyVarObject_ob_size(a);
