@@ -107,7 +107,9 @@ public final class NativeComplex {
     // Allocator region of exact int structs (see NativeLong)
     public static final long S_LONG = S_BDEPTH + 8;
     public static final long S_SMALL = S_LONG + NativeLong.REGION_SIZE; // NativeSmall region
-    public static final long STATE_SIZE = S_SMALL + NativeSmall.REGION_SIZE;
+    // Native str region (see NativeStr)
+    public static final long S_STR = S_SMALL + NativeSmall.REGION_SIZE;
+    public static final long STATE_SIZE = S_STR + NativeStr.REGION_SIZE;
 
     private static final long ARENA_SIZE = 64 * 1024;
     private static final long ARENA_HEADER = 16;
@@ -366,7 +368,7 @@ public final class NativeComplex {
         return UNSAFE.getLong(st + S_TYPE);
     }
 
-    static void borrowPush(long st, long p) {
+    public static void borrowPush(long st, long p) {
         long top = UNSAFE.getLong(st + S_BTOP);
         if (CompilerDirectives.injectBranchProbability(CompilerDirectives.SLOWPATH_PROBABILITY, top >= UNSAFE.getLong(st + S_BCAP))) {
             growBorrowStack(st);
@@ -417,6 +419,14 @@ public final class NativeComplex {
         }
     }
 
+    /** Entry {@code idx} of the borrowed stack, or 0 if the stack is not that deep. */
+    public static long borrowAt(long st, long idx) {
+        if (idx >= UNSAFE.getLong(st + S_BTOP)) {
+            return 0;
+        }
+        return UNSAFE.getLong(UNSAFE.getLong(st + S_BSTACK) + 8 * idx);
+    }
+
     /** Depth of the borrowed stack at entry of a downcall (0 if there is no state). */
     public static long borrowMark(long st) {
         return st == 0 ? 0 : UNSAFE.getLong(st + S_BTOP);
@@ -432,12 +442,16 @@ public final class NativeComplex {
             long arr = UNSAFE.getLong(st + S_BSTACK);
             long longType = NativeLong.getLongType(st);
             long complexType = UNSAFE.getLong(st + S_TYPE);
+            long strType = NativeStr.getStrType(st);
             while (top > mark) {
                 top--;
                 long p = UNSAFE.getLong(arr + 8 * top);
                 long type = UNSAFE.getLong(p + OFF_TYPE);
                 if (type == longType) {
                     NativeLong.decref(st, p);
+                } else if (type == strType && type != 0) {
+                    // Str struct made for a borrowed argument
+                    NativeStr.decref(p);
                 } else if (type == complexType) {
                     decref(st, p);
                 } else {

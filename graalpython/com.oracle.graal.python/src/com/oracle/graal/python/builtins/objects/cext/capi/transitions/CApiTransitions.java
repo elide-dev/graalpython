@@ -1970,6 +1970,33 @@ public abstract class CApiTransitions {
             return PNone.NO_VALUE == obj || DescriptorDeleteMarker.INSTANCE == obj;
         }
 
+        /**
+         * An exact str that is a bare Java string crosses as a native str struct (no
+         * wrapper, no stub, no handle). Callers that need a stable pointer (borrowed items of
+         * containers) promote it to a PString first.
+         */
+        @Specialization
+        static long doString(Node inliningTarget, TruffleString s, boolean needsTransfer,
+                        @Exclusive @Cached NativeStrNodes.StrToNativeNode strToNativeNode) {
+            CompilerAsserts.partialEvaluationConstant(needsTransfer);
+            return stringToNative(inliningTarget, s, needsTransfer, strToNativeNode);
+        }
+
+        static long stringToNative(Node inliningTarget, TruffleString s, boolean needsTransfer, NativeStrNodes.StrToNativeNode strToNativeNode) {
+            PythonContext context = PythonContext.get(inliningTarget);
+            long st = context.getNativeComplexState();
+            if (CompilerDirectives.injectBranchProbability(CompilerDirectives.SLOWPATH_PROBABILITY, com.oracle.graal.python.runtime.nativeaccess.NativeStr.getStrType(st) == 0)) {
+                return stringToNativeOff(s);
+            }
+            return strToNativeNode.execute(inliningTarget, st, s, needsTransfer);
+        }
+
+        /** Scheme off (or C not initialized): a PString with a stub whose count is owned by C. */
+        @TruffleBoundary
+        private static long stringToNativeOff(TruffleString s) {
+            return executeUncached(PFactory.createString(PythonLanguage.get(null), s), true);
+        }
+
         @Specialization(guards = "mapsToNull(obj)")
         @SuppressWarnings("unused")
         static long doNullValues(Node inliningTarget, Object obj, boolean needsTransfer) {
@@ -2065,9 +2092,10 @@ public abstract class CApiTransitions {
             return o instanceof com.oracle.graal.python.builtins.objects.complex.PComplex c && c.isExact();
         }
 
-        @Specialization(replaces = {"doNative", "doNullValues", "doPythonObject", "doExactComplex", "doLongNative", "doDoubleNative", "doNativeFloatValue"})
+        @Specialization(replaces = {"doNative", "doNullValues", "doPythonObject", "doExactComplex", "doLongNative", "doDoubleNative", "doNativeFloatValue", "doString"})
         static long doGeneric(Node inliningTarget, Object obj, boolean needsTransfer,
                         @Cached InlinedExactClassProfile classProfile,
+                        @Exclusive @Cached NativeStrNodes.StrToNativeNode strToNativeNode,
                         @Exclusive @Cached InlinedBranchProfile hasReplicatedNativeReferences,
                         @Exclusive @Cached FirstToNativeNode firstToNativeNode,
                         @Exclusive @Cached UpdateStrongRefNode updateRefNode) {
@@ -2098,6 +2126,11 @@ public abstract class CApiTransitions {
             // Step 2: handle values that map to NULL
             if (mapsToNull(profiled)) {
                 return 0;
+            }
+
+            // Bare Java string -> native str struct
+            if (profiled instanceof TruffleString s) {
+                return stringToNative(inliningTarget, s, needsTransfer, strToNativeNode);
             }
 
             // Exact complex -> native struct
@@ -2318,6 +2351,8 @@ public abstract class CApiTransitions {
                         @Cached InlinedConditionProfile isNativeComplexProfile,
                         @Cached InlinedConditionProfile isNativeLongProfile,
                         @Cached InlinedConditionProfile isNativeFloatProfile,
+                        @Cached InlinedConditionProfile isNativeStrProfile,
+                        @Cached NativeStrNodes.NativeToStrNode nativeToStrNode,
                         @Cached(inline = false) NativeFloatValueNode floatValueNode,
                         @Exclusive @Cached InlinedExactClassProfile wrapperProfile,
                         @Exclusive @Cached UpdateStrongRefNode updateRefNode) {
@@ -2380,6 +2415,10 @@ public abstract class CApiTransitions {
                     long obType = UNSAFE.getLong(pointer + 8);
                     if (isNativeFloatProfile.profile(inliningTarget, obType == com.oracle.graal.python.runtime.nativeaccess.NativeSmall.getFloatType(complexState) && obType != 0)) {
                         return com.oracle.graal.python.runtime.nativeaccess.NativeSmall.floatFromNative(complexState, pointer, needsTransfer);
+                    }
+                    // Native str struct -> Java string
+                    if (isNativeStrProfile.profile(inliningTarget, com.oracle.graal.python.runtime.nativeaccess.NativeStr.isNativeStr(complexState, pointer, obType))) {
+                        return nativeToStrNode.execute(inliningTarget, pointer, needsTransfer);
                     }
                     Object value = floatValueNode.execute(complexState, pointer, obType, needsTransfer);
                     if (value != null) {
@@ -2624,6 +2663,8 @@ public abstract class CApiTransitions {
                         @Cached InlinedConditionProfile isNativeComplexProfile,
                         @Cached InlinedConditionProfile isNativeLongProfile,
                         @Cached InlinedConditionProfile isNativeFloatProfile,
+                        @Cached InlinedConditionProfile isNativeStrProfile,
+                        @Cached NativeStrNodes.NativeToStrNode nativeToStrNode,
                         @Cached(inline = false) NativeFloatValueNode floatValueNode,
                         @Cached InlinedExactClassProfile wrapperProfile,
                         @Cached UpdateStrongRefNode updateRefNode) {
@@ -2675,6 +2716,10 @@ public abstract class CApiTransitions {
                     long obType = UNSAFE.getLong(pointer + 8);
                     if (isNativeFloatProfile.profile(inliningTarget, obType == com.oracle.graal.python.runtime.nativeaccess.NativeSmall.getFloatType(complexState) && obType != 0)) {
                         return com.oracle.graal.python.runtime.nativeaccess.NativeSmall.floatFromNative(complexState, pointer, stealing);
+                    }
+                    // Native str struct -> Java string
+                    if (isNativeStrProfile.profile(inliningTarget, com.oracle.graal.python.runtime.nativeaccess.NativeStr.isNativeStr(complexState, pointer, obType))) {
+                        return nativeToStrNode.execute(inliningTarget, pointer, stealing);
                     }
                     Object value = floatValueNode.execute(complexState, pointer, obType, stealing);
                     if (value != null) {

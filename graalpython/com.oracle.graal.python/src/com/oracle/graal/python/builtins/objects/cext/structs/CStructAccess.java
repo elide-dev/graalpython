@@ -314,7 +314,9 @@ public class CStructAccess {
             if (old != NULLPTR) {
                 toPython.execute(old, true);
             }
-            Object promoted = ensurePythonObjectNode.execute(PythonContext.get(inliningTarget), value, false);
+            // Items written into native storage/struct fields keep a stable stub (C compares them by pointer)
+            Object promoted = EnsurePythonObjectNode.promoteBorrowedString(PythonContext.get(inliningTarget),
+                            ensurePythonObjectNode.execute(PythonContext.get(inliningTarget), value, false));
             NativeMemory.writePtr(pointer + offset, toNative.executeNewRef(inliningTarget, promoted));
         }
     }

@@ -278,6 +278,7 @@ Py_LOCAL_SYMBOL uint32_t Py_Truffle_Options;
 Py_LOCAL_SYMBOL void graalpy_init_complex_alloc(void); // complexobject.c
 Py_LOCAL_SYMBOL void graalpy_init_list_slots(void); // listobject.c
 Py_LOCAL_SYMBOL void graalpy_init_long_alloc(void); // longobject.c
+Py_LOCAL_SYMBOL void graalpy_init_str(void); // unicodeobject.c
 Py_LOCAL_SYMBOL void graalpy_init_small_alloc(void); // obmalloc.c
 Py_LOCAL_SYMBOL void graalpy_init_dict_mirror(void); // dictobject.c
 
@@ -609,6 +610,8 @@ PyAPI_FUNC(PyThreadState **) initialize_graal_capi(void **builtin_closures, GCSt
     graalpy_init_complex_alloc();
     // GraalPy change: shared native allocator for exact int
     graalpy_init_long_alloc();
+    // GraalPy change: native str values
+    graalpy_init_str();
     // GraalPy change: small-block pool for PyObject_Malloc shared with Java (floats)
     graalpy_init_small_alloc();
     // GraalPy change: PyDict_Next entry mirror ("Java ran" epoch)

@@ -109,7 +109,7 @@ public final class PythonCextTupleBuiltins {
             int index = checkIndex(inliningTarget, key, sequenceStorage, raiseNode);
             Object result = getItemNode.execute(inliningTarget, sequenceStorage, index);
             assert result != null : "tuple must not contain Java null";
-            Object promotedValue = ensureNode.execute(context, result, false);
+            Object promotedValue = com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(context, ensureNode.execute(context, result, false));
             if (promotedValue != result) {
                 sequenceStorage = generalizationNode.execute(inliningTarget, sequenceStorage, promotedValue);
                 tuple.setSequenceStorage(sequenceStorage);
@@ -133,7 +133,7 @@ public final class PythonCextTupleBuiltins {
             if (result == null) {
                 return NATIVE_NULL;
             }
-            Object promotedValue = ensureNode.execute(context, result, false);
+            Object promotedValue = com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(context, ensureNode.execute(context, result, false));
             if (promotedValue != result) {
                 setItemNode.execute(inliningTarget, sequenceStorage, index, promotedValue);
                 return promotedValue;

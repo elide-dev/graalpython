@@ -148,7 +148,7 @@ public final class PythonCextListBuiltins {
                 throw raiseNode.raise(inliningTarget, IndexError, ErrorMessages.LIST_INDEX_OUT_OF_RANGE);
             }
             Object result = getItemNode.execute(inliningTarget, sequenceStorage, (int) key);
-            Object promotedValue = ensureNode.execute(context, result, false);
+            Object promotedValue = com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(context, ensureNode.execute(context, result, false));
             if (promotedValue != result) {
                 sequenceStorage = generalizationNode.execute(inliningTarget, sequenceStorage, promotedValue);
                 list.setSequenceStorage(sequenceStorage);
@@ -181,7 +181,7 @@ public final class PythonCextListBuiltins {
             }
             Object result = GetItemScalarNode.executeUncached(sequenceStorage, (int) key);
             // See the note in PyDict_GetItemRef
-            Object promotedValue = EnsurePythonObjectNode.executeUncached(PythonContext.get(null), result, false);
+            Object promotedValue = EnsurePythonObjectNode.promoteBorrowedString(PythonContext.get(null), EnsurePythonObjectNode.executeUncached(PythonContext.get(null), result, false));
             if (promotedValue != result) {
                 sequenceStorage = ListGeneralizationNode.executeUncached(sequenceStorage, promotedValue);
                 list.setSequenceStorage(sequenceStorage);

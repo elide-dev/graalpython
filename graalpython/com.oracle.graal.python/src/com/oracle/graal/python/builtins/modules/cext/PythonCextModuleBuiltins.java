@@ -202,7 +202,7 @@ public final class PythonCextModuleBuiltins {
                 CompilerDirectives.transferToInterpreterAndInvalidate();
                 throw PRaiseNode.raiseStatic(inliningTarget, SystemError, ErrorMessages.NAMELESS_MODULE);
             }
-            Object promotedName = ensureNode.execute(context, nameAttr, false);
+            Object promotedName = com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(context, ensureNode.execute(context, nameAttr, false));
             if (promotedName == nameAttr) {
                 return nameAttr;
             } else {

@@ -340,7 +340,7 @@ public final class PythonCextDictBuiltins {
         } else if (o instanceof Double d && !com.oracle.graal.python.builtins.objects.floats.PFloat.fitsInFloat(d)) {
             return PFactory.createFloat(context.getLanguage(), d);
         }
-        return ensureNode.execute(context, o, false);
+        return com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(context, ensureNode.execute(context, o, false));
     }
 
     /**
@@ -462,7 +462,7 @@ public final class PythonCextDictBuiltins {
                     noResultProfile.enter(inliningTarget);
                     return NATIVE_NULL;
                 }
-                Object promotedValue = ensureNode.execute(context, res, false);
+                Object promotedValue = com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(context, ensureNode.execute(context, res, false));
                 if (promotedValue != res) {
                     setItemNode.execute(null, inliningTarget, dict, key, promotedValue);
                     return promotedValue;
@@ -510,7 +510,7 @@ public final class PythonCextDictBuiltins {
                 noResultProfile.enter(inliningTarget);
                 return NATIVE_NULL;
             }
-            Object promotedValue = ensureNode.execute(context, res, false);
+            Object promotedValue = com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(context, ensureNode.execute(context, res, false));
             if (promotedValue != res) {
                 setItemNode.execute(null, inliningTarget, dict, key, promotedValue);
                 return promotedValue;
@@ -553,7 +553,7 @@ public final class PythonCextDictBuiltins {
                      * This is sad, but code out there still likes to assume that anything they get from the dictionary
                      * is kept alive by the dictionary. CPython itself does that in getargs.c.
                      */
-                    Object promotedValue = ensureNode.execute(context, value, false);
+                    Object promotedValue = com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(context, ensureNode.execute(context, value, false));
                     if (promotedValue != value) {
                         setItemNode.execute(null, inliningTarget, dict, key, promotedValue);
                     }
@@ -593,7 +593,7 @@ public final class PythonCextDictBuiltins {
                 Object value = getItem.execute(null, inliningTarget, dict.getDictStorage(), key);
                 // See PyDict_GetItemRef
                 if (value != null) {
-                    Object promotedValue = ensureNode.execute(context, value, false);
+                    Object promotedValue = com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(context, ensureNode.execute(context, value, false));
                     if (promotedValue != value) {
                         setItemNode.execute(null, inliningTarget, dict, key, promotedValue);
                     }
@@ -634,7 +634,7 @@ public final class PythonCextDictBuiltins {
                     return 0;
                 }
                 if (resultPtr != NULLPTR) {
-                    result = toNativeNode.executeNewRef(inliningTarget, ensureNode.execute(context, value, false));
+                    result = toNativeNode.executeNewRef(inliningTarget, com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(context, ensureNode.execute(context, value, false)));
                 }
                 return 1;
             } finally {
@@ -744,7 +744,7 @@ public final class PythonCextDictBuiltins {
                         @Cached EnsurePythonObjectNode ensureNode,
                         @Cached SetItemNode setItemNode) {
             Object result = setDefault.execute(null, inliningTarget, dict, key, value);
-            Object promotedValue = ensureNode.execute(context, result, false);
+            Object promotedValue = com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(context, ensureNode.execute(context, result, false));
             if (promotedValue != result) {
                 setItemNode.execute(null, inliningTarget, dict, key, promotedValue);
                 return promotedValue;
@@ -777,12 +777,12 @@ public final class PythonCextDictBuiltins {
                 long hash = hashNode.execute(null, inliningTarget, key);
                 Object value = getItemNode.execute(null, inliningTarget, storage, key, hash);
                 if (value != null) {
-                    result = toNativeNode.executeNewRef(inliningTarget, ensureNode.execute(context, value, false));
+                    result = toNativeNode.executeNewRef(inliningTarget, com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(context, ensureNode.execute(context, value, false)));
                     return 1;
                 }
                 HashingStorage newStorage = setItemNode.execute(null, inliningTarget, storage, key, hash, defaultValue);
                 updateStorageNode.execute(inliningTarget, dict, storage, newStorage);
-                result = toNativeNode.executeNewRef(inliningTarget, ensureNode.execute(context, defaultValue, false));
+                result = toNativeNode.executeNewRef(inliningTarget, com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(context, ensureNode.execute(context, defaultValue, false)));
                 return 0;
             } finally {
                 if (resultPtr != NULLPTR) {

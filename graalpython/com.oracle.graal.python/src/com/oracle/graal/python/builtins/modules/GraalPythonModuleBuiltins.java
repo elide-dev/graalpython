@@ -1452,6 +1452,38 @@ public final class GraalPythonModuleBuiltins extends PythonBuiltins {
         }
     }
 
+    @Builtin(name = "native_str_stats", minNumOfPositionalArgs = 0, maxNumOfPositionalArgs = 0, doc = "Measurement only: ((name, value), ...): " +
+                    "live_stubs (occupied native stub table entries) and the native str counters (counts need -Dgraalpy.complexCounters=true).")
+    @GenerateNodeFactory
+    public abstract static class NativeStrStatsNode extends PythonBuiltinNode {
+
+        @Specialization
+        @TruffleBoundary
+        static Object get() {
+            PythonContext ctx = PythonContext.get(null);
+            long live = 0;
+            var lookup = ctx.handleContext == null ? null : ctx.handleContext.nativeStubLookup;
+            if (lookup != null) {
+                for (Object o : lookup) {
+                    if (o != null) {
+                        live++;
+                    }
+                }
+            }
+            long st = ctx.peekNativeComplexState();
+            long[] counts = com.oracle.graal.python.runtime.nativeaccess.NativeStr.snapshot(st, false);
+            String[] names = com.oracle.graal.python.runtime.nativeaccess.NativeStr.COUNTER_NAMES;
+            PythonLanguage language = PythonLanguage.get(null);
+            Object[] result = new Object[counts.length + 2];
+            result[0] = PFactory.createTuple(language, new Object[]{toTruffleStringUncached("live_stubs"), live});
+            result[1] = PFactory.createTuple(language, new Object[]{toTruffleStringUncached("str_enabled"), com.oracle.graal.python.runtime.nativeaccess.NativeStr.getStrType(st) != 0});
+            for (int i = 0; i < counts.length; i++) {
+                result[i + 2] = PFactory.createTuple(language, new Object[]{toTruffleStringUncached(names[i]), counts[i]});
+            }
+            return PFactory.createTuple(language, result);
+        }
+    }
+
     @Builtin(name = "native_long_live", minNumOfPositionalArgs = 0, maxNumOfPositionalArgs = 0, doc = "Measurement only: number of native int structs " +
                     "currently allocated by the shared allocator (0 before the C API is initialized).")
     @GenerateNodeFactory

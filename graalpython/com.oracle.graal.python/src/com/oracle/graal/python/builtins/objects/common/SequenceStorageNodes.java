@@ -1482,7 +1482,7 @@ public abstract class SequenceStorageNodes {
                         @Cached PythonToNativeInternalNode toNative,
                         @Cached CExtNodes.XDecRefPointerNode decRefPointerNode) {
             long old = readPtrArrayElement(storage.getPtr(), idx);
-            Object promoted = ensurePythonObjectNode.execute(PythonContext.get(inliningTarget), value, false);
+            Object promoted = CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(PythonContext.get(inliningTarget), ensurePythonObjectNode.execute(PythonContext.get(inliningTarget), value, false));
             writePtrArrayElement(storage.getPtr(), idx, toNative.executeNewRef(inliningTarget, promoted));
             decRefPointerNode.execute(inliningTarget, old);
         }
@@ -1505,7 +1505,7 @@ public abstract class SequenceStorageNodes {
                         @Bind Node inliningTarget,
                         @Cached CExtNodes.EnsurePythonObjectNode ensurePythonObjectNode,
                         @Cached PythonToNativeInternalNode toNative) {
-            Object promoted = ensurePythonObjectNode.execute(PythonContext.get(inliningTarget), value, false);
+            Object promoted = CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(PythonContext.get(inliningTarget), ensurePythonObjectNode.execute(PythonContext.get(inliningTarget), value, false));
             writePtrArrayElement(storage.getPtr(), idx, toNative.executeNewRef(inliningTarget, promoted));
         }
     }
@@ -4405,7 +4405,7 @@ public abstract class SequenceStorageNodes {
                 writePtrArrayElement(storage.getPtr(), i, readPtrArrayElement(storage.getPtr(), i - 1));
             }
             LoopNode.reportLoopCount(inliningTarget, (int) Math.min(Integer.MAX_VALUE, Math.max(0L, (long) storage.length() - index)));
-            Object promoted = ensurePythonObjectNode.execute(PythonContext.get(inliningTarget), value, false);
+            Object promoted = CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(PythonContext.get(inliningTarget), ensurePythonObjectNode.execute(PythonContext.get(inliningTarget), value, false));
             writePtrArrayElement(storage.getPtr(), index, toNative.executeNewRef(inliningTarget, promoted));
             storage.setNewLength(newLength);
             return storage;

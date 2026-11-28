@@ -243,7 +243,9 @@ public abstract class CExtNodes {
             assert TypeNodes.NeedsNativeAllocationNode.executeUncached(object);
             NativeFunctionPointer callable = CApiContext.getNativeSymbol(inliningTarget, NativeCAPISymbol.FUN_UNICODE_SUBTYPE_NEW);
             try {
-                Object promotedArg = ensurePythonObjectNode.execute(PythonContext.get(inliningTarget), arg, false);
+                // Raw invoker (no downcall depth): keep the str a stub held by promotedArg
+                Object promotedArg = EnsurePythonObjectNode.promoteBorrowedString(PythonContext.get(inliningTarget),
+                                ensurePythonObjectNode.execute(PythonContext.get(inliningTarget), arg, false));
                 long result = ExternalFunctionInvoker.invokeUNICODE_SUBTYPE_NEW(callable.getAddress(),
                                 toNativeNode.execute(inliningTarget, object),
                                 toNativeNode.execute(inliningTarget, promotedArg));
@@ -860,6 +862,11 @@ public abstract class CExtNodes {
                     com.oracle.graal.python.runtime.nativeaccess.NativeComplex.decref(st, pointer);
                     return;
                 }
+                // Native str structs have no Java object
+                if (st != 0 && com.oracle.graal.python.runtime.nativeaccess.NativeStr.isNativeStr(st, pointer)) {
+                    com.oracle.graal.python.runtime.nativeaccess.NativeStr.decref(pointer);
+                    return;
+                }
                 // Float structs (exact, or a value-type float subclass) have no Java object
                 if (st != 0 && (com.oracle.graal.python.runtime.nativeaccess.NativeSmall.isNativeFloat(st, pointer) ||
                                 CApiTransitions.NativeFloatValueTypes.isValueType(st, CStructAccess.readPtrField(pointer, CFields.PyObject__ob_type)))) {
@@ -1440,6 +1447,17 @@ public abstract class CExtNodes {
             return (PythonAbstractObject) EnsurePythonObjectNodeGen.getUncached().execute(context, object, true);
         }
 
+        /**
+         * For borrowed references C may keep as long as a container holds the item
+         * (tuple, list, dict items): a bare str becomes a PString (stable stub), as before.
+         */
+        public static Object promoteBorrowedString(PythonContext context, Object object) {
+            if (object instanceof TruffleString s) {
+                return PFactory.createString(context.getLanguage(), s);
+            }
+            return object;
+        }
+
         @TruffleBoundary
         public static boolean doesNotNeedPromotion(Object object) {
             return EnsurePythonObjectNodeGen.getUncached().execute(PythonContext.get(null), object, false) == object;
@@ -1479,6 +1497,10 @@ public abstract class CExtNodes {
             } else if (profiled instanceof Boolean b) {
                 return b ? context.getTrue() : context.getFalse();
             } else if (profiled instanceof TruffleString s) {
+                // Unless boxables are promoted, a bare str crosses as a native str struct
+                if (!promoteBoxable && com.oracle.graal.python.runtime.nativeaccess.NativeStr.getStrType(context.peekNativeComplexState()) != 0) {
+                    return s;
+                }
                 return PFactory.createString(context.getLanguage(), s);
             } else if (profiled instanceof PythonBuiltinClassType pbct) {
                 return context.lookupType(pbct);

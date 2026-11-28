@@ -179,7 +179,7 @@ public final class PythonCextTypeBuiltins {
                     value = getItem.execute(null, inliningTarget, dict, key);
                 }
                 if (value != null && value != PNone.NO_VALUE) {
-                    Object promoted = ensureNode.execute(context, value, false);
+                    Object promoted = com.oracle.graal.python.builtins.objects.cext.capi.CExtNodes.EnsurePythonObjectNode.promoteBorrowedString(context, ensureNode.execute(context, value, false));
                     if (promoted != value) {
                         if (dict == null) {
                             putNode.execute((PythonManagedClass) cls, key, promoted);
