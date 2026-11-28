@@ -1195,7 +1195,7 @@ public final class PolyglotModuleBuiltins extends PythonBuiltins {
             Object arrayObject;
             if (storage instanceof EmptySequenceStorage) {
                 arrayObject = seq instanceof PBytesLike ? EMPTY_BYTE_ARRAY : EMPTY_OBJECT_ARRAY;
-            } else if (storage instanceof ArrayBasedSequenceStorage basicStorage) {
+            } else if (storage instanceof ArrayBasedSequenceStorage basicStorage && !(storage instanceof com.oracle.graal.python.runtime.sequence.storage.ComplexPtrSequenceStorage)) {
                 arrayObject = basicStorage.getInternalArrayObject();
             } else {
                 throw PRaiseNode.raiseStatic(inliningTarget, PythonBuiltinClassType.NotImplementedError, ErrorMessages.GETTING_POLYGLOT_STORAGE_FOR_NATIVE_STORAGE_NOT_IMPLEMENTED);

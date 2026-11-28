@@ -29,6 +29,160 @@ class complex "PyComplexObject *" "&PyComplex_Type"
 #include "clinic/complexobject.c.h"
 #endif // GraalPy change
 
+/* GraalPy change: Exact complex objects are native structs allocated from a size-class
+ * free list shared with Java (com.oracle.graal.python.runtime.nativeaccess.NativeComplex); the layouts below
+ * must match the Java offsets. Single-threaded (GIL). */
+typedef struct {
+    PyComplexObject obj;   /* ob_refcnt @0, ob_type @8, cval @16 */
+    int64_t serial;        /* @32, 0 = free */
+    int64_t in_fifo;       /* @40 */
+} GraalPyComplexBlock;
+
+#define GRAALPY_COMPLEX_FIFO_SIZE 64
+#define GRAALPY_COMPLEX_ARENA_SIZE (64 * 1024)
+#define GRAALPY_COMPLEX_ARENA_HEADER 16
+enum { GC_ALLOC = 0, GC_FREE = 1, GC_INCREF = 2, GC_DECREF = 3, GC_STALE = 4, GC_EVICT_FREED = 5, GC_EVICT_KEPT = 6 };
+
+typedef struct {
+    GraalPyComplexBlock *free_list;  /* @0 */
+    char *bump;                      /* @8 */
+    char *end;                       /* @16 */
+    int64_t serial;                  /* @24 */
+    PyTypeObject *type;              /* @32 */
+    int64_t fifo_pos;                /* @40 */
+    int64_t flags;                   /* @48: bit 0 = counters on */
+    char *arenas;                    /* @56 */
+    int64_t counters[16];            /* @64 */
+    struct {
+        GraalPyComplexBlock *p;
+        int64_t serial;
+    } fifo[GRAALPY_COMPLEX_FIFO_SIZE]; /* @192 */
+} GraalPyComplexAllocState;
+
+_Static_assert(sizeof(GraalPyComplexBlock) == 48, "complex block layout");
+_Static_assert(offsetof(GraalPyComplexAllocState, fifo) == 192, "complex state layout");
+
+static GraalPyComplexAllocState *graalpy_complex_state;
+static destructor graalpy_complex_orig_dealloc;
+
+#define GRAALPY_COMPLEX_COUNT(IDX) do { if (graalpy_complex_state->flags & 1) graalpy_complex_state->counters[IDX]++; } while (0)
+#define GRAALPY_COMPLEX_LINK(B) (*(GraalPyComplexBlock **) &(B)->obj.cval.real)
+
+static GraalPyComplexBlock *
+graalpy_complex_new_arena(GraalPyComplexAllocState *st)
+{
+    char *arena = (char *) malloc(GRAALPY_COMPLEX_ARENA_SIZE);
+    if (arena == NULL) {
+        return NULL;
+    }
+    *(char **) arena = st->arenas;
+    st->arenas = arena;
+    char *p = arena + GRAALPY_COMPLEX_ARENA_HEADER;
+    st->bump = p + sizeof(GraalPyComplexBlock);
+    st->end = arena + GRAALPY_COMPLEX_ARENA_SIZE;
+    return (GraalPyComplexBlock *) p;
+}
+
+/* New exact complex with refcount 1 (owned by the caller). */
+static PyObject *
+graalpy_complex_alloc(double real, double imag)
+{
+    GraalPyComplexAllocState *st = graalpy_complex_state;
+    GraalPyComplexBlock *b = st->free_list;
+    if (b != NULL) {
+        st->free_list = GRAALPY_COMPLEX_LINK(b);
+    } else if (st->bump + sizeof(GraalPyComplexBlock) <= st->end) {
+        b = (GraalPyComplexBlock *) st->bump;
+        st->bump += sizeof(GraalPyComplexBlock);
+    } else {
+        b = graalpy_complex_new_arena(st);
+        if (b == NULL) {
+            return PyErr_NoMemory();
+        }
+    }
+    b->serial = ++st->serial;
+    b->in_fifo = 0;
+    Py_SET_REFCNT((PyObject *) b, 1);
+    Py_SET_TYPE((PyObject *) b, st->type);
+    b->obj.cval.real = real;
+    b->obj.cval.imag = imag;
+    GRAALPY_COMPLEX_COUNT(GC_ALLOC);
+    return (PyObject *) b;
+}
+
+static void
+graalpy_complex_free_block(GraalPyComplexAllocState *st, GraalPyComplexBlock *b)
+{
+    b->serial = 0;
+    GRAALPY_COMPLEX_LINK(b) = st->free_list;
+    st->free_list = b;
+    GRAALPY_COMPLEX_COUNT(GC_FREE);
+}
+
+/* Same algorithm as NativeComplex.enqueue: a zero-count struct waits in the FIFO; the evicted entry is freed
+ * if it is the same incarnation (serial) and its count is still zero. */
+static void
+graalpy_complex_enqueue(GraalPyComplexBlock *b)
+{
+    GraalPyComplexAllocState *st = graalpy_complex_state;
+    if (b->in_fifo) {
+        return;
+    }
+    b->in_fifo = 1;
+    int64_t pos = st->fifo_pos;
+    int idx = (int) (pos & (GRAALPY_COMPLEX_FIFO_SIZE - 1));
+    GraalPyComplexBlock *old = st->fifo[idx].p;
+    if (old != NULL) {
+        if (old->serial == st->fifo[idx].serial) {
+            old->in_fifo = 0;
+            if (Py_REFCNT((PyObject *) old) == 0) {
+                graalpy_complex_free_block(st, old);
+                GRAALPY_COMPLEX_COUNT(GC_EVICT_FREED);
+            } else {
+                GRAALPY_COMPLEX_COUNT(GC_EVICT_KEPT);
+            }
+        } else {
+            GRAALPY_COMPLEX_COUNT(GC_EVICT_KEPT);
+        }
+    }
+    st->fifo[idx].p = b;
+    st->fifo[idx].serial = b->serial;
+    st->fifo_pos = pos + 1;
+}
+
+static void
+graalpy_complex_dealloc(PyObject *op)
+{
+    if (Py_TYPE(op) != &PyComplex_Type) {
+        /* native subtype that inherited this slot */
+        if (graalpy_complex_orig_dealloc != NULL) {
+            graalpy_complex_orig_dealloc(op);
+        }
+        return;
+    }
+    graalpy_complex_enqueue((GraalPyComplexBlock *) op);
+}
+
+static PyObject *
+graalpy_complex_tp_alloc(PyTypeObject *type, Py_ssize_t nitems)
+{
+    if (type == &PyComplex_Type && nitems == 0) {
+        return graalpy_complex_alloc(0.0, 0.0);
+    }
+    return PyType_GenericAlloc(type, nitems);
+}
+
+Py_LOCAL_SYMBOL void
+graalpy_init_complex_alloc(void)
+{
+    graalpy_complex_state = (GraalPyComplexAllocState *) GraalPyPrivate_Complex_AllocState();
+    graalpy_complex_state->type = &PyComplex_Type;
+    graalpy_complex_orig_dealloc = PyComplex_Type.tp_dealloc;
+    PyComplex_Type.tp_dealloc = graalpy_complex_dealloc;
+    PyComplex_Type.tp_alloc = graalpy_complex_tp_alloc;
+}
+/* end GraalPy change */
+
 /* elementary operations on complex numbers */
 
 static Py_complex c_1 = {1., 0.};
@@ -226,6 +380,10 @@ static PyObject *
 complex_subtype_from_c_complex(PyTypeObject *type, Py_complex cval)
 {
     PyObject *op;
+    // GraalPy change: exact complex from the shared allocator
+    if (type == &PyComplex_Type) {
+        return graalpy_complex_alloc(cval.real, cval.imag);
+    }
 
     op = type->tp_alloc(type, 0);
     if (op != NULL)
@@ -249,16 +407,12 @@ GraalPyPrivate_Complex_SubtypeFromDoubles(PyTypeObject *type, double real, doubl
     return complex_subtype_from_c_complex(type, c);
 }
 
-#if 0 // GraalPy change
 PyObject *
 PyComplex_FromDoubles(double real, double imag)
 {
-    Py_complex c;
-    c.real = real;
-    c.imag = imag;
-    return PyComplex_FromCComplex(c);
+    // GraalPy change: no upcall: shared native allocator
+    return graalpy_complex_alloc(real, imag);
 }
-#endif // GraalPy change
 
 static PyObject * try_complex_special_method(PyObject *);
 

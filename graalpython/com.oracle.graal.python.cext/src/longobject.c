@@ -67,6 +67,210 @@ is_medium_int(stwodigits x)
 #endif // GraalPy change
 
 
+/* GraalPy change: Exact int objects whose value does not fit the tagged pointer are native
+ * structs from a size-class free list shared with Java (com.oracle.graal.python.runtime.nativeaccess.NativeLong);
+ * the layouts must match the Java offsets. Up to GRAALPY_LONG_MAX_DIGITS digits per struct. Single-threaded (GIL). */
+#define GRAALPY_LONG_MAX_DIGITS 4
+typedef struct {
+    PyObject_HEAD                       /* ob_refcnt @0, ob_type @8 */
+    uintptr_t lv_tag;                   /* @16; free-list link of a free block */
+    digit ob_digit[GRAALPY_LONG_MAX_DIGITS]; /* @24 */
+} GraalPyLongBlock;
+
+typedef struct {
+    GraalPyLongBlock *free_list;  /* @0 */
+    char *bump;                   /* @8 */
+    char *end;                    /* @16 */
+    PyTypeObject *type;           /* @24 */
+    char *arenas;                 /* @32 */
+    int64_t counters[8];          /* @40 */
+} GraalPyLongAllocState;
+
+_Static_assert(sizeof(GraalPyLongBlock) == 40, "int block layout");
+_Static_assert(offsetof(GraalPyLongBlock, ob_digit) == offsetof(PyLongObject, long_value.ob_digit), "int block digits");
+_Static_assert(offsetof(GraalPyLongBlock, lv_tag) == offsetof(PyLongObject, long_value.lv_tag), "int block tag");
+_Static_assert(offsetof(GraalPyLongAllocState, counters) == 40, "int state layout");
+
+#define GRAALPY_LONG_ARENA_SIZE (64 * 1024)
+#define GRAALPY_LONG_ARENA_HEADER 16
+#define GRAALPY_LONG_LINK(B) (*(GraalPyLongBlock **) &(B)->lv_tag)
+
+static GraalPyLongAllocState *graalpy_long_state;
+static destructor graalpy_long_orig_dealloc;
+
+static GraalPyLongBlock *
+graalpy_long_block(void)
+{
+    GraalPyLongAllocState *st = graalpy_long_state;
+    GraalPyLongBlock *b = st->free_list;
+    if (b != NULL) {
+        st->free_list = GRAALPY_LONG_LINK(b);
+    } else if (st->bump + sizeof(GraalPyLongBlock) <= st->end) {
+        b = (GraalPyLongBlock *) st->bump;
+        st->bump += sizeof(GraalPyLongBlock);
+    } else {
+        char *arena = (char *) malloc(GRAALPY_LONG_ARENA_SIZE);
+        if (arena == NULL) {
+            return NULL;
+        }
+        *(char **) arena = st->arenas;
+        st->arenas = arena;
+        b = (GraalPyLongBlock *) (arena + GRAALPY_LONG_ARENA_HEADER);
+        st->bump = arena + GRAALPY_LONG_ARENA_HEADER + sizeof(GraalPyLongBlock);
+        st->end = arena + GRAALPY_LONG_ARENA_SIZE;
+    }
+    Py_SET_REFCNT((PyObject *) b, 1);
+    Py_SET_TYPE((PyObject *) b, &PyLong_Type);
+    return b;
+}
+
+/* New exact int with refcount 1 from sign and 64-bit magnitude. */
+static PyObject *
+graalpy_long_from_mag(int negative, unsigned long long mag)
+{
+    GraalPyLongBlock *b = graalpy_long_block();
+    if (b == NULL) {
+        return PyErr_NoMemory();
+    }
+    digit d0 = (digit) (mag & PyLong_MASK);
+    digit d1 = (digit) ((mag >> PyLong_SHIFT) & PyLong_MASK);
+    digit d2 = (digit) (mag >> (2 * PyLong_SHIFT));
+    uintptr_t n = d2 ? 3 : d1 ? 2 : mag ? 1 : 0;
+    b->lv_tag = (n << NON_SIZE_BITS) | (negative ? SIGN_NEGATIVE : mag == 0 ? SIGN_ZERO : 0);
+    b->ob_digit[0] = d0;
+    b->ob_digit[1] = d1;
+    b->ob_digit[2] = d2;
+    b->ob_digit[3] = 0;
+    return (PyObject *) b;
+}
+
+static void
+graalpy_long_dealloc(PyObject *op)
+{
+    if (points_to_py_handle_space(op) || Py_TYPE(op) != &PyLong_Type) {
+        /* stub of a managed int (legacy path) or a native subtype that inherited this slot */
+        if (graalpy_long_orig_dealloc != NULL) {
+            graalpy_long_orig_dealloc(op);
+        }
+        return;
+    }
+    GraalPyLongBlock *b = (GraalPyLongBlock *) op;
+    Py_SET_TYPE(op, NULL);
+    GRAALPY_LONG_LINK(b) = graalpy_long_state->free_list;
+    graalpy_long_state->free_list = b;
+}
+
+static PyObject *
+graalpy_long_tp_alloc(PyTypeObject *type, Py_ssize_t nitems)
+{
+    if (type == &PyLong_Type) {
+        if (nitems > GRAALPY_LONG_MAX_DIGITS) {
+            PyErr_SetString(PyExc_SystemError, "GraalPy: exact int objects with more than 4 digits cannot be allocated natively");
+            return NULL;
+        }
+        GraalPyLongBlock *b = graalpy_long_block();
+        if (b == NULL) {
+            return PyErr_NoMemory();
+        }
+        b->lv_tag = SIGN_ZERO;
+        memset(b->ob_digit, 0, sizeof(b->ob_digit));
+        return (PyObject *) b;
+    }
+    return PyType_GenericAlloc(type, nitems);
+}
+
+Py_LOCAL_SYMBOL void
+graalpy_init_long_alloc(void)
+{
+    graalpy_long_state = (GraalPyLongAllocState *) GraalPyPrivate_Long_AllocState();
+    graalpy_long_orig_dealloc = PyLong_Type.tp_dealloc;
+    PyLong_Type.tp_dealloc = graalpy_long_dealloc;
+    PyLong_Type.tp_alloc = graalpy_long_tp_alloc;
+    graalpy_long_state->type = &PyLong_Type;
+}
+
+/* Exact native int struct (not a handle, not a tagged int)? */
+static inline int
+graalpy_long_is_struct(PyObject *op)
+{
+    return !points_to_py_handle_space(op) && Py_TYPE(op) == &PyLong_Type;
+}
+
+/* Reads sign and magnitude of an exact native int struct; 0 if the magnitude needs more than 64 bits. */
+static inline int
+graalpy_long_read(PyObject *op, int *negative, unsigned long long *mag)
+{
+    GraalPyLongBlock *b = (GraalPyLongBlock *) op;
+    uintptr_t tag = b->lv_tag;
+    uintptr_t n = tag >> NON_SIZE_BITS;
+    unsigned long long m;
+    switch (n) {
+        case 0: m = 0; break;
+        case 1: m = b->ob_digit[0]; break;
+        case 2: m = b->ob_digit[0] | ((unsigned long long) b->ob_digit[1] << PyLong_SHIFT); break;
+        case 3:
+            if (b->ob_digit[2] >= 16) {
+                return 0;
+            }
+            m = b->ob_digit[0] | ((unsigned long long) b->ob_digit[1] << PyLong_SHIFT) | ((unsigned long long) b->ob_digit[2] << (2 * PyLong_SHIFT));
+            break;
+        default: return 0;
+    }
+    *negative = (tag & SIGN_MASK) == SIGN_NEGATIVE;
+    *mag = m;
+    return 1;
+}
+
+/* Signed 64-bit value of an exact native int struct; 0 if it is not one or does not fit (caller falls back). */
+static inline int
+graalpy_long_signed(PyObject *op, long long *out)
+{
+    int neg;
+    unsigned long long mag;
+    if (!graalpy_long_is_struct(op) || !graalpy_long_read(op, &neg, &mag)) {
+        return 0;
+    }
+    if (neg) {
+        if (mag > (unsigned long long) LLONG_MAX + 1) {
+            return 0;
+        }
+        *out = (long long) (0ULL - mag);
+    } else {
+        if (mag > (unsigned long long) LLONG_MAX) {
+            return 0;
+        }
+        *out = (long long) mag;
+    }
+    return 1;
+}
+
+/* Non-negative value of an exact native int struct that fits 64 bits unsigned. */
+static inline int
+graalpy_long_unsigned(PyObject *op, unsigned long long *out)
+{
+    int neg;
+    unsigned long long mag;
+    if (!graalpy_long_is_struct(op) || !graalpy_long_read(op, &neg, &mag) || neg) {
+        return 0;
+    }
+    *out = mag;
+    return 1;
+}
+
+/* Value modulo 2**64 of an exact native int struct whose magnitude fits 64 bits. */
+static inline int
+graalpy_long_mask(PyObject *op, unsigned long long *out)
+{
+    int neg;
+    unsigned long long mag;
+    if (!graalpy_long_is_struct(op) || !graalpy_long_read(op, &neg, &mag)) {
+        return 0;
+    }
+    *out = neg ? 0ULL - mag : mag;
+    return 1;
+}
+/* end GraalPy change */
+
 static PyObject *
 get_small_int(sdigit ival)
 {
@@ -325,6 +529,9 @@ PyLong_FromLong(long ival)
         if ((ival) <= INT32_MAX) { \
             return int32_to_pointer((int)(ival)); \
         } \
+        if (graalpy_long_state != NULL) { /* native struct, no upcall */ \
+            return graalpy_long_from_mag(0, (unsigned long long)(ival)); \
+        } \
         return GraalPyPrivate_Long_FromUnsignedLongLong((unsigned long long)(ival)); \
     } while(0)
 
@@ -472,6 +679,10 @@ PyLong_AsLongAndOverflow(PyObject *vv, int *overflow)
     if (points_to_py_int_handle(vv)) {
         return pointer_to_int64(vv);
     }
+    long long fast;
+    if (graalpy_long_signed(vv, &fast)) {
+        return (long) fast;
+    }
     return (long) GraalPyPrivate_Long_AsPrimitiveAndOverflow(vv, sizeof(long), overflow);
 }
 
@@ -484,6 +695,10 @@ PyLong_AsLong(PyObject *obj)
     // GraalPy change: different implementation
     if (points_to_py_int_handle(obj)) {
         return pointer_to_int64(obj);
+    }
+    long long fast;
+    if (graalpy_long_signed(obj, &fast)) {
+        return (long) fast;
     }
     return (long) GraalPyPrivate_Long_AsPrimitiveWithCoercion(obj, MODE_SIGNED, sizeof(long));
 }
@@ -514,6 +729,10 @@ PyLong_AsSsize_t(PyObject *vv) {
     if (points_to_py_int_handle(vv)) {
         return pointer_to_int64(vv);
     }
+    long long fast;
+    if (graalpy_long_signed(vv, &fast)) {
+        return (Py_ssize_t) fast;
+    }
     return (Py_ssize_t) GraalPyPrivate_Long_AsPrimitive(vv, MODE_SIGNED, sizeof(Py_ssize_t));
 }
 
@@ -536,6 +755,10 @@ PyLong_AsUnsignedLong(PyObject *vv)
         }
         return (unsigned long) value;
     }
+    unsigned long long fast;
+    if (graalpy_long_unsigned(vv, &fast)) {
+        return (unsigned long) fast;
+    }
     return (unsigned long) GraalPyPrivate_Long_AsPrimitive(vv, MODE_UNSIGNED, sizeof(unsigned long));
 }
 
@@ -553,6 +776,10 @@ PyLong_AsSize_t(PyObject *vv)
             return (size_t) -1;
         }
         return (size_t) value;
+    }
+    unsigned long long fast;
+    if (graalpy_long_unsigned(vv, &fast)) {
+        return (size_t) fast;
     }
     return (size_t) GraalPyPrivate_Long_AsPrimitive(vv, MODE_UNSIGNED, sizeof(size_t));
 }
@@ -600,6 +827,10 @@ PyLong_AsUnsignedLongMask(PyObject *op)
     }
     if (points_to_py_int_handle(op)) {
         return pointer_to_int64(op);
+    }
+    unsigned long long fast;
+    if (graalpy_long_mask(op, &fast)) {
+        return (unsigned long) fast;
     }
     return (unsigned long) GraalPyPrivate_Long_AsPrimitiveWithCoercion(op, MODE_MASK, sizeof(unsigned long));
 }
@@ -1260,6 +1491,9 @@ PyLong_FromLongLong(long long ival)
     // GraalPy change: different implementation
     if ((int)ival == ival) {
         return int32_to_pointer(ival);
+    } else if (graalpy_long_state != NULL) {
+        // Native struct, no upcall
+        return graalpy_long_from_mag(ival < 0, ival < 0 ? 0ULL - (unsigned long long) ival : (unsigned long long) ival);
     } else {
         return GraalPyPrivate_Long_FromLongLong(ival);
     }
@@ -1288,6 +1522,10 @@ PyLong_AsLongLong(PyObject *vv)
     if (points_to_py_int_handle(vv)) {
         return pointer_to_int64(vv);
     }
+    long long fast;
+    if (graalpy_long_signed(vv, &fast)) {
+        return fast;
+    }
     return (long long) GraalPyPrivate_Long_AsPrimitiveWithCoercion(vv, MODE_SIGNED, sizeof(long long));
 }
 
@@ -1309,6 +1547,10 @@ PyLong_AsUnsignedLongLong(PyObject *vv)
             return (unsigned long long) -1;
         }
         return (unsigned long long) value;
+    }
+    unsigned long long fast;
+    if (graalpy_long_unsigned(vv, &fast)) {
+        return fast;
     }
     return (unsigned long long) GraalPyPrivate_Long_AsPrimitive(vv, MODE_UNSIGNED, sizeof(unsigned long long));
 }
@@ -1358,6 +1600,10 @@ PyLong_AsUnsignedLongLongMask(PyObject *op)
     if (points_to_py_int_handle(op)) {
         return pointer_to_int64(op);
     }
+    unsigned long long fast;
+    if (graalpy_long_mask(op, &fast)) {
+        return fast;
+    }
     return (unsigned long long) GraalPyPrivate_Long_AsPrimitiveWithCoercion(op, MODE_MASK, sizeof(unsigned long long));
 }
 
@@ -1382,6 +1628,10 @@ PyLong_AsLongLongAndOverflow(PyObject *vv, int *overflow)
     }
     if (points_to_py_int_handle(vv)) {
         return pointer_to_int64(vv);
+    }
+    long long fast;
+    if (graalpy_long_signed(vv, &fast)) {
+        return fast;
     }
     return GraalPyPrivate_Long_AsPrimitiveAndOverflow(vv, sizeof(long long), overflow);
 }

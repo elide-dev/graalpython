@@ -58,6 +58,18 @@ public abstract class SequenceStorageFactory {
         }
     }
 
+    /**
+     * Like {@link #createStorage} but for lists only: all native-layout instances
+     * and/or None give a pointer-aware storage (tuples never get one).
+     */
+    public static SequenceStorage createListStorage(Node inliningTarget, Object[] values) {
+        InstPtrSequenceStorage inst = InstPtrSequenceStorage.tryCreate(values, values.length, values.length);
+        if (inst != null) {
+            return inst;
+        }
+        return createStorage(inliningTarget, values);
+    }
+
     private static boolean canSpecializeToInt(Node inliningTarget, Object[] values) {
         for (int i = 0; i < values.length; i++) {
             if (!(values[i] instanceof Integer)) {

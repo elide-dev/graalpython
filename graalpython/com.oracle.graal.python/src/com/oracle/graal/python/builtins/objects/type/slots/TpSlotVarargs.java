@@ -407,6 +407,9 @@ public final class TpSlotVarargs {
                         long callable, long args, long nargs, long keywordNames) {
             Object state = BoundaryCallContext.enter(frame, threadState, boundaryCallData);
             CApiTiming.enter();
+            // The raw invoker does not count the downcall depth; without this, a nested
+            // downcall made while the vectorcall runs releases the borrowed copies of its arguments
+            com.oracle.graal.python.runtime.nativeaccess.NativeComplex.enterDowncall();
             try {
                 return ExternalFunctionInvoker.invokeVECTORCALL(vectorcallPointer, callable, args, nargs, keywordNames);
             } catch (Throwable exception) {
@@ -414,6 +417,7 @@ public final class TpSlotVarargs {
                 GilNode.uncachedAcquire();
                 throw CompilerDirectives.shouldNotReachHere(exception);
             } finally {
+                com.oracle.graal.python.runtime.nativeaccess.NativeComplex.exitDowncall();
                 CApiTiming.exit(C_API_TIMING_VECTORCALL);
                 if (frame != null && threadState.getCaughtException() != null) {
                     PArguments.setException(frame, threadState.getCaughtException());

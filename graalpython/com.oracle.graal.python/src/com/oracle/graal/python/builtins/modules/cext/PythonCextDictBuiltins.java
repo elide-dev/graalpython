@@ -246,8 +246,8 @@ public final class PythonCextDictBuiltins {
                         while (itNext.execute(inliningTarget, storage, it)) {
                             Object key = itKey.execute(inliningTarget, storage, it);
                             Object value = itValue.execute(inliningTarget, storage, it);
-                            if (ensureKeyNode.execute(context, key, false) != key ||
-                                            ensureValueNode.execute(context, value, false) != value) {
+                            if (promoteForBorrow(context, ensureKeyNode, key) != key ||
+                                            promoteForBorrow(context, ensureValueNode, value) != value) {
                                 needsRewrite = true;
                                 break;
                             }
@@ -267,11 +267,11 @@ public final class PythonCextDictBuiltins {
                         while (itNext.execute(inliningTarget, storage, it)) {
                             Object key = itKey.execute(inliningTarget, storage, it);
                             Object value = itValue.execute(inliningTarget, storage, it);
-                            Object promotedKey = ensureKeyNode.execute(context, key, false);
+                            Object promotedKey = promoteForBorrow(context, ensureKeyNode, key);
                             if (promotedKey != key) {
                                 key = promotedKey;
                             }
-                            Object promotedValue = ensureValueNode.execute(context, value, false);
+                            Object promotedValue = promoteForBorrow(context, ensureValueNode, value);
                             if (promotedValue != value) {
                                 value = promotedValue;
                             }
@@ -303,13 +303,12 @@ public final class PythonCextDictBuiltins {
             writeLong(posPtr, newPos);
             if (keyPtr != NULLPTR) {
                 Object key = itKey.execute(inliningTarget, storage, it);
-                assert ensureKeyNode.execute(context, key, false) == key;
+                // not asserted promoted: a callback may have stored a large int / float mid-pass
                 // Borrowed reference
                 NativeMemory.writePtr(keyPtr, toNativeNode.execute(inliningTarget, key));
             }
             if (valuePtr != NULLPTR) {
                 Object value = itValue.execute(inliningTarget, storage, it);
-                assert ensureValueNode.execute(context, value, false) == value;
                 // Borrowed reference
                 NativeMemory.writePtr(valuePtr, toNativeNode.execute(inliningTarget, value));
             }
@@ -325,6 +324,23 @@ public final class PythonCextDictBuiltins {
         static int run(Object dict, Object posPtr, Object keyPtr, Object valuePtr, Object hashPtr) {
             return 0;
         }
+    }
+
+    /**
+     * What a dict entry must be so that the borrowed reference C gets for it lives as
+     * long as the dict holds the entry (CPython's rule for PyDict_Next). Besides the usual promotion
+     * (strings, booleans, ...), a long outside the tagged range and a double that is not a tagged
+     * float32 are promoted to PInt/PFloat (with a stub owned by the entry): otherwise they would become
+     * a fresh native struct on every conversion, released when the outermost C call returns, so each
+     * PyDict_Next step would allocate and pointers would not be stable.
+     */
+    static Object promoteForBorrow(PythonContext context, EnsurePythonObjectNode ensureNode, Object o) {
+        if (o instanceof Long l && !PInt.fitsInInt(l)) {
+            return PFactory.createInt(context.getLanguage(), l);
+        } else if (o instanceof Double d && !com.oracle.graal.python.builtins.objects.floats.PFloat.fitsInFloat(d)) {
+            return PFactory.createFloat(context.getLanguage(), d);
+        }
+        return ensureNode.execute(context, o, false);
     }
 
     /**
@@ -362,7 +378,7 @@ public final class PythonCextDictBuiltins {
             while (itNext.execute(inliningTarget, storage, it)) {
                 Object key = itKey.execute(inliningTarget, storage, it);
                 Object value = itValue.execute(inliningTarget, storage, it);
-                if (ensureKeyNode.execute(context, key, false) != key || ensureValueNode.execute(context, value, false) != value) {
+                if (promoteForBorrow(context, ensureKeyNode, key) != key || promoteForBorrow(context, ensureValueNode, value) != value) {
                     return -1;
                 }
                 n = it.getState() + 1L;

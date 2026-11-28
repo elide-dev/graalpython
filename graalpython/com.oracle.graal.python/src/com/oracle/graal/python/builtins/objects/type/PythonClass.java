@@ -73,6 +73,17 @@ public final class PythonClass extends PythonManagedClass {
     private MroShape mroShape;
     private byte mroShapeInvalidationsCount;
 
+    /** Id of a native-layout class (see NativeInstance), 0 otherwise. */
+    @com.oracle.truffle.api.CompilerDirectives.CompilationFinal private int nativeLayoutId;
+
+    public int getNativeLayoutId() {
+        return nativeLayoutId;
+    }
+
+    public void setNativeLayoutId(int id) {
+        this.nativeLayoutId = id;
+    }
+
     /** Assumption for instance attribute fast paths, which are only used in single-context mode. */
     private final LazyCyclicAssumption typeStableAssumption;
 

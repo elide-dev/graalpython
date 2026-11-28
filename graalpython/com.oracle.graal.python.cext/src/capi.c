@@ -275,7 +275,10 @@ CAPI_BUILTINS
 }
 
 Py_LOCAL_SYMBOL uint32_t Py_Truffle_Options;
+Py_LOCAL_SYMBOL void graalpy_init_complex_alloc(void); // complexobject.c
 Py_LOCAL_SYMBOL void graalpy_init_list_slots(void); // listobject.c
+Py_LOCAL_SYMBOL void graalpy_init_long_alloc(void); // longobject.c
+Py_LOCAL_SYMBOL void graalpy_init_small_alloc(void); // obmalloc.c
 Py_LOCAL_SYMBOL void graalpy_init_dict_mirror(void); // dictobject.c
 
 #undef bool
@@ -602,6 +605,12 @@ PyAPI_FUNC(PyThreadState **) initialize_graal_capi(void **builtin_closures, GCSt
     Py_Truffle_Options = GraalPyPrivate_Native_Options();
 
     initialize_builtin_types_and_structs();
+    // GraalPy change: shared native allocator for exact complex
+    graalpy_init_complex_alloc();
+    // GraalPy change: shared native allocator for exact int
+    graalpy_init_long_alloc();
+    // GraalPy change: small-block pool for PyObject_Malloc shared with Java (floats)
+    graalpy_init_small_alloc();
     // GraalPy change: PyDict_Next entry mirror ("Java ran" epoch)
     graalpy_init_dict_mirror();
     // GraalPy change: PyList_Type's sq_length/mp_length read the list stub's mirrored ob_size

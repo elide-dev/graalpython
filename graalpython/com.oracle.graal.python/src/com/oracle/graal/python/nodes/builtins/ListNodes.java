@@ -180,6 +180,10 @@ public abstract class ListNodes {
 
         @Specialization
         static void doPList(PList list) {
+            if (list.getSequenceStorage() instanceof com.oracle.graal.python.runtime.sequence.storage.ComplexPtrSequenceStorage cp) {
+                // Drop the element references now instead of when the storage is collected
+                cp.releaseAllAndClear();
+            }
             list.setSequenceStorage(EmptySequenceStorage.INSTANCE);
         }
 
@@ -230,7 +234,12 @@ public abstract class ListNodes {
                         @Bind Node inliningTarget,
                         @Bind PythonLanguage language,
                         @Cached SequenceStorageNodes.CopyNode copyNode) {
-            return PFactory.createList(language, copyNode.execute(inliningTarget, list.getSequenceStorage()));
+            SequenceStorage storage = list.getSequenceStorage();
+            if (storage instanceof com.oracle.graal.python.runtime.sequence.storage.ComplexPtrSequenceStorage cp) {
+                // List copies keep the pointer representation (each element counted)
+                return PFactory.createList(language, cp.copyCounted());
+            }
+            return PFactory.createList(language, copyNode.execute(inliningTarget, storage));
         }
 
         @Specialization(guards = "!isNoValue(iterable)")

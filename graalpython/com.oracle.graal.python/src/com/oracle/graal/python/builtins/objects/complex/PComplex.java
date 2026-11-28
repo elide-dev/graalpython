@@ -25,7 +25,9 @@
  */
 package com.oracle.graal.python.builtins.objects.complex;
 
+import com.oracle.graal.python.builtins.PythonBuiltinClassType;
 import com.oracle.graal.python.builtins.objects.object.PythonBuiltinObject;
+import com.oracle.graal.python.builtins.objects.type.PythonBuiltinClass;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.object.Shape;
 
@@ -33,11 +35,44 @@ public final class PComplex extends PythonBuiltinObject {
 
     private final double real;
     private final double imag;
+    /** Exact type {@code complex} (not a subclass). */
+    private final boolean exact;
+    /**
+     * Unowned pointer to a native struct holding the same value (0 = none) and the
+     * serial the struct had when the pointer was recorded. Not counted in the native refcount; may
+     * be stale (see {@code NativeComplex}).
+     */
+    private long nativePtr;
+    private long serial;
 
     public PComplex(Object clazz, Shape instanceShape, double real, double imaginary) {
         super(clazz, instanceShape);
         this.real = real;
         this.imag = imaginary;
+        this.exact = clazz == PythonBuiltinClassType.PComplex || (clazz instanceof PythonBuiltinClass b && b.getType() == PythonBuiltinClassType.PComplex);
+    }
+
+    public PComplex(Object clazz, Shape instanceShape, double real, double imaginary, long nativePtr, long serial) {
+        this(clazz, instanceShape, real, imaginary);
+        this.nativePtr = nativePtr;
+        this.serial = serial;
+    }
+
+    public boolean isExact() {
+        return exact;
+    }
+
+    public long getNativePtr() {
+        return nativePtr;
+    }
+
+    public long getSerial() {
+        return serial;
+    }
+
+    public void setNative(long ptr, long ser) {
+        this.nativePtr = ptr;
+        this.serial = ser;
     }
 
     @Override

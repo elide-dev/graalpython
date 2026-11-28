@@ -825,6 +825,15 @@ public abstract class CExtNodes {
             CExtNodesFactory.XDecRefPointerNodeGen.getUncached().execute(null, pointer);
         }
 
+        /** Runs {@code _Py_Dealloc} for a native object whose count is already zero. */
+        @TruffleBoundary
+        public static void deallocNative(long pointer) {
+            PythonContext context = PythonContext.get(null);
+            var callable = CApiContext.getNativeSymbol(null, FUN_PY_DEALLOC);
+            ExternalFunctionInvoker.invokePY_DEALLOC(null, C_API_TIMING, context.ensureNativeContext(), BoundaryCallData.getUncached(),
+                            context.getThreadState(PythonLanguage.get(null)), callable, pointer);
+        }
+
         public abstract void execute(Node inliningTarget, long pointer);
 
         @Specialization
@@ -839,6 +848,24 @@ public abstract class CExtNodes {
             // Boxed primitive values do not have a native reference count.
             if (HandlePointerConverter.pointsToPyFloatHandle(pointer) || HandlePointerConverter.pointsToPyIntHandle(pointer)) {
                 return;
+            }
+            if (!HandlePointerConverter.pointsToPyHandleSpace(pointer)) {
+                // Structs of the shared allocator have no Java object
+                long st = PythonContext.get(inliningTarget).peekNativeComplexState();
+                if (st != 0 && com.oracle.graal.python.runtime.nativeaccess.NativeLong.isNativeLong(st, pointer)) {
+                    com.oracle.graal.python.runtime.nativeaccess.NativeLong.decref(st, pointer);
+                    return;
+                }
+                if (st != 0 && com.oracle.graal.python.runtime.nativeaccess.NativeComplex.isNativeComplex(st, pointer)) {
+                    com.oracle.graal.python.runtime.nativeaccess.NativeComplex.decref(st, pointer);
+                    return;
+                }
+                // Float structs (exact, or a value-type float subclass) have no Java object
+                if (st != 0 && (com.oracle.graal.python.runtime.nativeaccess.NativeSmall.isNativeFloat(st, pointer) ||
+                                CApiTransitions.NativeFloatValueTypes.isValueType(st, CStructAccess.readPtrField(pointer, CFields.PyObject__ob_type)))) {
+                    com.oracle.graal.python.runtime.nativeaccess.NativeSmall.decref(st, pointer);
+                    return;
+                }
             }
             Object object = toPythonNode.execute(inliningTarget, pointer);
             if (object instanceof PythonAbstractNativeObject) {
@@ -1438,13 +1465,17 @@ public abstract class CExtNodes {
             } else if (profiled instanceof Integer i) {
                 return promoteBoxable ? PFactory.createInt(context.getLanguage(), i) : i;
             } else if (profiled instanceof Long l) {
-                return promoteBoxable || !PInt.fitsInInt(l) ? PFactory.createInt(context.getLanguage(), l) : l;
+                // A long that does not fit the tagged pointer is not promoted; it becomes a
+                // native PyLongObject struct in PythonToNativeInternalNode
+                return promoteBoxable ? PFactory.createInt(context.getLanguage(), l) : l;
             } else if (profiled instanceof Float f) {
                 return promoteBoxable ? PFactory.createFloat(context.getLanguage(), f) : f;
             } else if (profiled instanceof Double d && Double.isNaN(d)) {
                 return d;
             } else if (profiled instanceof Double d) {
-                return promoteBoxable || !PFloat.fitsInFloat(d) ? PFactory.createFloat(context.getLanguage(), d) : d;
+                // A double that does not fit the tagged pointer is not promoted; it becomes a
+                // native PyFloatObject struct in PythonToNativeInternalNode
+                return promoteBoxable ? PFactory.createFloat(context.getLanguage(), d) : d;
             } else if (profiled instanceof Boolean b) {
                 return b ? context.getTrue() : context.getFalse();
             } else if (profiled instanceof TruffleString s) {

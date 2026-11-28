@@ -98,7 +98,12 @@ public final class PySequenceArrayWrapper {
             } else {
                 array = getInternalArrayNode.execute(inliningTarget, s);
             }
-            return storageToNativeNode.execute(inliningTarget, array, s.length());
+            int len = s.length();
+            if (s instanceof com.oracle.graal.python.runtime.sequence.storage.ComplexPtrSequenceStorage cp) {
+                // The boxed copy replaces the pointer storage; drop its references now
+                cp.releaseAllAndClear();
+            }
+            return storageToNativeNode.execute(inliningTarget, array, len);
         }
 
         /*

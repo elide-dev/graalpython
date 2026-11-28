@@ -139,6 +139,88 @@ _GraalPyMem_Footprint(void)
 }
 #endif
 
+/* Small-block pool for PyObject_Malloc, shared with Java
+   (NativeSmall.java), like CPython's pymalloc for small objects. A pool block is 64 bytes: the usual
+   16-byte header (requested size, GRAALPY_MEM_HEAD_POOL_MAGIC) and up to 48 bytes of payload. Free
+   blocks keep the magic, hold the free-list link in the size word, have the payload's second word
+   (ob_type of an object) cleared and the payload's last word (generation, unused by objects up to 40 bytes)
+   incremented. Arenas of 64 KB are never freed. Pool blocks are not counted in
+   allocated_memory. Only the PyObject_* entry points allocate from the pool (they need the GIL, as
+   does the Java side); every free/realloc path recognises pool blocks by the magic. */
+#define GRAALPY_MEM_HEAD_POOL_MAGIC ((size_t)0x47505241504F4F4CULL)
+#define GRAALPY_SMALL_BLOCK 64
+#define GRAALPY_SMALL_MAX ((size_t)(GRAALPY_SMALL_BLOCK - 16))
+#define GRAALPY_SMALL_ARENA_SIZE (64 * 1024)
+#define GRAALPY_SMALL_ARENA_HEADER 16
+
+typedef struct {
+    char *free_list;            /* @0  */
+    char *bump;                 /* @8  */
+    char *end;                  /* @16 */
+    char *arenas;               /* @24 */
+    PyTypeObject *float_type;   /* @32 */
+    void *float_dealloc;        /* @40 */
+    void *float_free;           /* @48 */
+    int64_t counters[4];        /* @56: C allocs, C frees */
+} GraalPySmallState;
+
+_Static_assert(offsetof(GraalPySmallState, counters) == 56, "small state layout");
+
+Py_LOCAL_SYMBOL GraalPySmallState *graalpy_small_state = NULL;
+
+static void *
+graalpy_small_alloc(size_t size)
+{
+    GraalPySmallState *st = graalpy_small_state;
+    char *b = st->free_list;
+    if (b != NULL) {
+        st->free_list = *(char **) b;
+    } else if (st->bump + GRAALPY_SMALL_BLOCK <= st->end) {
+        b = st->bump;
+        st->bump += GRAALPY_SMALL_BLOCK;
+    } else {
+        char *arena = (char *) malloc(GRAALPY_SMALL_ARENA_SIZE);
+        if (arena == NULL) {
+            return NULL;
+        }
+        *(char **) arena = st->arenas;
+        st->arenas = arena;
+        b = arena + GRAALPY_SMALL_ARENA_HEADER;
+        st->bump = b + GRAALPY_SMALL_BLOCK;
+        st->end = arena + GRAALPY_SMALL_ARENA_SIZE;
+    }
+    ((size_t *) b)[0] = size;
+    ((size_t *) b)[1] = GRAALPY_MEM_HEAD_POOL_MAGIC;
+    return b + 16;
+}
+
+static inline int
+graalpy_small_is_pool(void *ptr)
+{
+    return ((size_t *) ptr)[-1] == GRAALPY_MEM_HEAD_POOL_MAGIC;
+}
+
+static void
+graalpy_small_free(void *ptr)
+{
+    GraalPySmallState *st = graalpy_small_state;
+    char *b = (char *) ptr - 16;
+    ((void **) ptr)[1] = NULL;
+    ((size_t *) ptr)[5]++; /* generation word (payload + 40): a Java value copy's struct hint is stale */
+    *(char **) b = st->free_list;
+    st->free_list = b;
+}
+
+/* called from capi.c after the builtin types are initialized */
+Py_LOCAL_SYMBOL void
+graalpy_init_small_alloc(void)
+{
+    GraalPySmallState *st = (GraalPySmallState *) GraalPyPrivate_Small_AllocState();
+    st->float_type = &PyFloat_Type;
+    st->float_dealloc = (void *) PyFloat_Type.tp_dealloc;
+    st->float_free = (void *) PyFloat_Type.tp_free;
+    graalpy_small_state = st;
+}
 static GraalPyMemSample_t _GraalPyMem_Samples[GRAALPY_MEM_SAMPLE_RING_SIZE] = {{0}};
 static unsigned long long _GraalPyMem_SampleSerial = 0;
 static size_t _GraalPyMem_SampleIndex = 0;
@@ -404,6 +486,9 @@ PyObject_Malloc(size_t size)
     OBJECT_STAT_INC_COND(allocations_big, size >= 4094);
     OBJECT_STAT_INC(allocations);
 #endif // GraalPy change
+    if (size <= GRAALPY_SMALL_MAX && graalpy_small_state != NULL) { // GraalPy change: small-block pool
+        return graalpy_small_alloc(size == 0 ? 1 : size);
+    }
     return _PyObject.malloc(_PyObject.ctx, size);
 }
 
@@ -419,6 +504,14 @@ PyObject_Calloc(size_t nelem, size_t elsize)
     OBJECT_STAT_INC_COND(allocations_big, elsize >= 4094);
     OBJECT_STAT_INC(allocations);
 #endif // GraalPy change
+    if (graalpy_small_state != NULL && nelem * elsize <= GRAALPY_SMALL_MAX) { // GraalPy change: small-block pool
+        size_t n = nelem * elsize;
+        void *p = graalpy_small_alloc(n == 0 ? 1 : n);
+        if (p != NULL) {
+            memset(p, 0, n == 0 ? 1 : n);
+        }
+        return p;
+    }
     return _PyObject.calloc(_PyObject.ctx, nelem, elsize);
 }
 
@@ -706,6 +799,19 @@ _GraalPyMem_RawRealloc(void *ctx, void *ptr, size_t size)
     if (size == 0)
         size = 1;
 
+    if (ptr != NULL && graalpy_small_is_pool(ptr)) { // GraalPy change: small-block pool block
+        size_t cur = ((size_t *) ptr)[-2];
+        if (size <= GRAALPY_SMALL_MAX) {
+            ((size_t *) ptr)[-2] = size;
+            return ptr;
+        }
+        void *np = _GraalPyMem_RawMalloc(ctx, size);
+        if (np != NULL) {
+            memcpy(np, ptr, cur);
+            graalpy_small_free(ptr);
+        }
+        return np;
+    }
     if (ptr != NULL && AS_MEM_HEAD(ptr)->dummy == GRAALPY_MEM_HEAD_MMAP_MAGIC) { // GraalPy change: mapped block
         size_t cur = AS_MEM_HEAD(ptr)->size;
         void *np = _GraalPyMem_RawMalloc(ctx, size);
@@ -755,6 +861,10 @@ _GraalPyMem_RawFree(void *ctx, void *ptr)
      * 'free' would just do nothing. */
     if (ptr == NULL)
         return;
+    if (graalpy_small_is_pool(ptr)) { // GraalPy change: small-block pool block
+        graalpy_small_free(ptr);
+        return;
+    }
     GraalPyMem_t *state = (GraalPyMem_t *)ctx;
     mem_head_t *ptr_with_head = _GraalPyMem_GetValidatedHead(__func__, ptr);
     const size_t size = ptr_with_head->size;

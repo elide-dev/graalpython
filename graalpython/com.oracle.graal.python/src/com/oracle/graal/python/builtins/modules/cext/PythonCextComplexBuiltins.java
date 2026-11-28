@@ -43,23 +43,19 @@ package com.oracle.graal.python.builtins.modules.cext;
 import static com.oracle.graal.python.annotations.ArgDescriptor.Int;
 import static com.oracle.graal.python.annotations.ArgDescriptor.Pointer;
 import static com.oracle.graal.python.annotations.ArgDescriptor.PyObject;
-import static com.oracle.graal.python.builtins.modules.cext.PythonCextBuiltins.CApiCallPath.Direct;
 import static com.oracle.graal.python.builtins.modules.cext.PythonCextBuiltins.CApiCallPath.Ignored;
 import static com.oracle.graal.python.builtins.objects.cext.structs.CStructAccess.writeDoubleField;
 
-import com.oracle.graal.python.PythonLanguage;
 import com.oracle.graal.python.annotations.ArgDescriptor;
 import com.oracle.graal.python.builtins.modules.cext.PythonCextBuiltins.CApiBuiltin;
 import com.oracle.graal.python.builtins.objects.PNone;
 import com.oracle.graal.python.builtins.objects.cext.capi.transitions.CApiTransitions.NativeToPythonInternalNode;
-import com.oracle.graal.python.builtins.objects.cext.capi.transitions.CApiTransitions.PythonToNativeInternalNode;
 import com.oracle.graal.python.builtins.objects.cext.structs.CFields;
 import com.oracle.graal.python.builtins.objects.complex.ComplexBuiltins.ComplexValue;
 import com.oracle.graal.python.builtins.objects.complex.ComplexBuiltins.ToComplexValueNode;
 import com.oracle.graal.python.builtins.objects.complex.ComplexBuiltins.TryComplexSpecialMethodNode;
 import com.oracle.graal.python.lib.PyComplexCheckNode;
 import com.oracle.graal.python.lib.PyFloatAsDoubleNode;
-import com.oracle.graal.python.runtime.object.PFactory;
 
 public final class PythonCextComplexBuiltins {
 
@@ -115,8 +111,13 @@ public final class PythonCextComplexBuiltins {
         return 0.0;
     }
 
-    @CApiBuiltin(ret = PyObject, args = {ArgDescriptor.Double, ArgDescriptor.Double}, call = Direct, retConversion = long.class, argConversions = {double.class, double.class})
-    static long PyComplex_FromDoubles(double r, double i) {
-        return PythonToNativeInternalNode.executeNewRefUncached(PFactory.createComplex(PythonLanguage.get(null), r, i));
+    /*
+     * PyComplex_FromDoubles is implemented in C (complexobject.c) with the shared
+     * native allocator; C gets the allocator state once at C API initialization.
+     */
+    @CApiBuiltin(ret = Pointer, call = Ignored, retConversion = long.class, argConversions = {})
+    @com.oracle.truffle.api.CompilerDirectives.TruffleBoundary
+    static long GraalPyPrivate_Complex_AllocState() {
+        return com.oracle.graal.python.runtime.PythonContext.get(null).getNativeComplexState();
     }
 }

@@ -111,6 +111,17 @@ import com.oracle.truffle.api.profiles.InlinedConditionProfile;
 
 public final class PythonCextLongBuiltins {
 
+    /*
+     * C gets the int allocator region once at C API initialization (longobject.c,
+     * graalpy_init_long_alloc); the region is part of the shared native value state block (NativeComplex).
+     */
+    @CApiBuiltin(ret = Pointer, call = Ignored, retConversion = long.class, argConversions = {})
+    @com.oracle.truffle.api.CompilerDirectives.TruffleBoundary
+    static long GraalPyPrivate_Long_AllocState() {
+        return com.oracle.graal.python.runtime.PythonContext.get(null).getNativeComplexState() + com.oracle.graal.python.runtime.nativeaccess.NativeComplex.S_LONG;
+    }
+
+
     private static final CApiTiming TIMING_PYLONG_GETINFO = CApiTiming.create(false, "PyLong_GetInfo");
 
     @CApiBuiltin(ret = PyObject, args = {}, call = Direct, retConversion = PythonToNativeNewRefNode.class, argConversions = {})

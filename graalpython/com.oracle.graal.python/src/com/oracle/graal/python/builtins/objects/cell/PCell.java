@@ -80,6 +80,7 @@ public final class PCell extends PythonBuiltinObject {
         if (this.ref != null) {
             invalidateAssumption(effectivelyFinal);
         }
+        com.oracle.graal.python.runtime.nativeaccess.NativeInstance.pinIfNative(ref, com.oracle.graal.python.runtime.nativeaccess.NativeInstance.C_PIN_CELL);
         this.ref = ref;
     }
 
@@ -93,6 +94,7 @@ public final class PCell extends PythonBuiltinObject {
                 invalidateAssumption(constantAssumption);
             }
         }
+        com.oracle.graal.python.runtime.nativeaccess.NativeInstance.pinIfNative(ref, com.oracle.graal.python.runtime.nativeaccess.NativeInstance.C_PIN_CELL);
         this.ref = ref;
     }
 

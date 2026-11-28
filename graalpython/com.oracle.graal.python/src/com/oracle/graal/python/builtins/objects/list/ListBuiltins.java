@@ -487,6 +487,10 @@ public final class ListBuiltins extends PythonBuiltins {
                         @Cached TypeNodes.GetInstanceShape getInstanceShape) {
             var sequenceStorage = getStorageNode.execute(inliningTarget, list);
             Object newClass = getClassForNewListNode.execute(inliningTarget, list);
+            if (sequenceStorage instanceof com.oracle.graal.python.runtime.sequence.storage.ComplexPtrSequenceStorage cp) {
+                // List copies keep the pointer representation (each element counted)
+                return PFactory.createList(newClass, getInstanceShape.execute(newClass), cp.copyCounted());
+            }
             return PFactory.createList(newClass, getInstanceShape.execute(newClass), copy.execute(inliningTarget, sequenceStorage));
         }
 
