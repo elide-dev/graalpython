@@ -104,7 +104,6 @@ import com.oracle.graal.python.runtime.exception.PException;
 import com.oracle.graal.python.runtime.nativeaccess.NativeSignature;
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
-import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.dsl.Bind;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.GenerateInline;
@@ -245,18 +244,18 @@ public abstract class TpSlotWrapper {
 
     /**
      * Compiled body of a one-argument slot upcall ({@code lenfunc}, {@code hashfunc},
-     * {@code inquiry}), one root per wrapper, so the slot is a constant of the compiled code. Same
+     * {@code inquiry}), one root per kind and language ({@link PythonLanguage#getSlotUpcallCallTarget}):
+     * wrappers of builtin slots are shared by all contexts, so the wrapper is an argument. Same
      * duties as the uncached closure bodies (GIL, argument conversion, slot call, exception transfer,
      * C API timing) plus the "Java ran" epoch bump (CApiEpoch), which those get from
-     * {@code GilNode.UncachedAcquire.close}. The argument is the native pointer (as {@code Long}); the
-     * result is the C return value as {@code Long}.
+     * {@code GilNode.UncachedAcquire.close}. The arguments are the native pointer (as {@code Long})
+     * and the wrapper; the result is the C return value as {@code Long}.
      */
     static final class UnarySlotUpcallRootNode extends RootNode {
         static final int KIND_LEN = 0;
         static final int KIND_HASH = 1;
         static final int KIND_INQUIRY = 2;
 
-        private final TpSlotWrapper wrapper;
         private final int kind;
         private final String name;
         @Child private GilNode gilNode = GilNode.create();
@@ -264,9 +263,12 @@ public abstract class TpSlotWrapper {
         @Child private CallUnarySlotNode callNode = TpSlotWrapperFactory.CallUnarySlotNodeGen.create();
         @Child private TransformPExceptionToNativeCachedNode transformExceptionNode;
 
-        UnarySlotUpcallRootNode(TpSlotWrapper wrapper, int kind, String name) {
-            super(PythonLanguage.get(null));
-            this.wrapper = wrapper;
+        static final com.oracle.graal.python.util.Function<PythonLanguage, UnarySlotUpcallRootNode> LEN = l -> new UnarySlotUpcallRootNode(l, KIND_LEN, "LenfuncWrapper");
+        static final com.oracle.graal.python.util.Function<PythonLanguage, UnarySlotUpcallRootNode> HASH = l -> new UnarySlotUpcallRootNode(l, KIND_HASH, "HashfuncWrapper");
+        static final com.oracle.graal.python.util.Function<PythonLanguage, UnarySlotUpcallRootNode> INQUIRY = l -> new UnarySlotUpcallRootNode(l, KIND_INQUIRY, "InquiryWrapper");
+
+        UnarySlotUpcallRootNode(PythonLanguage language, int kind, String name) {
+            super(language);
             this.kind = kind;
             this.name = name;
         }
@@ -289,7 +291,7 @@ public abstract class TpSlotWrapper {
         @Override
         public Object execute(VirtualFrame frame) {
             long arg0 = (long) frame.getArguments()[0];
-            TpSlotWrapper w = wrapper;
+            TpSlotWrapper w = (TpSlotWrapper) frame.getArguments()[1];
             boolean wasAcquired = gilNode.acquire();
             CApiTiming.enter();
             try {
@@ -565,16 +567,13 @@ public abstract class TpSlotWrapper {
     }
 
     public static final class InquiryWrapper extends TpSlotWrapper {
-        private final RootCallTarget upcallTarget;
-
         public InquiryWrapper(TpSlotManaged slot) {
             super(slot, SIGNATURE_I_P, HANDLE_INQUIRY);
-            this.upcallTarget = new UnarySlotUpcallRootNode(this, UnarySlotUpcallRootNode.KIND_INQUIRY, "InquiryWrapper").getCallTarget();
         }
 
         @CApiUpcallTarget
         private int executeInquiry(long arg0) {
-            return (int) (long) upcallTarget.call(arg0);
+            return (int) (long) PythonLanguage.get(null).getSlotUpcallCallTarget(UnarySlotUpcallRootNode.KIND_INQUIRY, UnarySlotUpcallRootNode.INQUIRY).call(arg0, this);
         }
 
         @Override
@@ -1021,16 +1020,13 @@ public abstract class TpSlotWrapper {
     }
 
     public static final class LenfuncWrapper extends TpSlotWrapper {
-        private final RootCallTarget upcallTarget;
-
         public LenfuncWrapper(TpSlotManaged managedSlot) {
             super(managedSlot, SIGNATURE_L_P, HANDLE_LENFUNC);
-            this.upcallTarget = new UnarySlotUpcallRootNode(this, UnarySlotUpcallRootNode.KIND_LEN, "LenfuncWrapper").getCallTarget();
         }
 
         @CApiUpcallTarget
         private long executeLenfunc(long arg0) {
-            return (long) upcallTarget.call(arg0);
+            return (long) PythonLanguage.get(null).getSlotUpcallCallTarget(UnarySlotUpcallRootNode.KIND_LEN, UnarySlotUpcallRootNode.LEN).call(arg0, this);
         }
 
         @Override
@@ -1040,17 +1036,14 @@ public abstract class TpSlotWrapper {
     }
 
     public static final class HashfuncWrapper extends TpSlotWrapper {
-        private final RootCallTarget upcallTarget;
-
 
         public HashfuncWrapper(TpSlotManaged slot) {
             super(slot, SIGNATURE_L_P, HANDLE_HASHFUNC);
-            this.upcallTarget = new UnarySlotUpcallRootNode(this, UnarySlotUpcallRootNode.KIND_HASH, "HashfuncWrapper").getCallTarget();
         }
 
         @CApiUpcallTarget
         private long executeHashfunc(long arg0) {
-            return (long) upcallTarget.call(arg0);
+            return (long) PythonLanguage.get(null).getSlotUpcallCallTarget(UnarySlotUpcallRootNode.KIND_HASH, UnarySlotUpcallRootNode.HASH).call(arg0, this);
         }
 
         @Override
