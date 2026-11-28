@@ -2451,10 +2451,26 @@ public abstract class ExternalFunctionNodes {
                             argsTuplePtr);
         }
 
+        /**
+         * Each element must still be the native representation of its managed argument: the same
+         * pointer (stubs, handles, tagged values, native objects), or, for an argument that crossed
+         * as a native value copy (str, int, float, complex), a struct of the same type and value.
+         * A copy is made per conversion, so it is not converted again here: that would make a new
+         * struct with a different address.
+         */
+        @TruffleBoundary
         private static boolean verifyElements(long op, Object[] managedArgs) {
             long obItem = CStructAccess.getFieldPtr(op, CFields.PyTupleObject__ob_item);
             for (int i = 0; i < managedArgs.length; i++) {
-                if (readPtrArrayElement(obItem, i) != PythonToNativeInternalNode.executeUncached(managedArgs[i], false)) {
+                long elem = readPtrArrayElement(obItem, i);
+                if (CApiTransitions.isNativeValueCopyOf(elem, managedArgs[i])) {
+                    // the tuple owns one reference to each element
+                    if (CApiTransitions.readNativeRefCount(elem) < 1) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (elem != PythonToNativeInternalNode.executeUncached(managedArgs[i], false)) {
                     return false;
                 }
             }

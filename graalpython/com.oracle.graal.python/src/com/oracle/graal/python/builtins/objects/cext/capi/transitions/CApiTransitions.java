@@ -1865,6 +1865,47 @@ public abstract class CApiTransitions {
         }
     }
 
+    /**
+     * For assertions: whether {@code pointer} is a native value copy (a str, int, float or complex
+     * struct made by {@link PythonToNativeInternalNode}) that stands for {@code value}. A value copy
+     * is made per conversion, so converting {@code value} again gives a different struct; this
+     * compares the type and the value the struct holds instead of the pointer. Returns false for
+     * anything that is not such a struct (handles, stubs, other native objects).
+     */
+    @TruffleBoundary
+    public static boolean isNativeValueCopyOf(long pointer, Object value) {
+        if (pointer == 0 || HandlePointerConverter.pointsToPyHandleSpace(pointer)) {
+            return false;
+        }
+        PythonContext context = PythonContext.get(null);
+        long st = context.peekNativeComplexState();
+        if (st == 0) {
+            return false;
+        }
+        if (com.oracle.graal.python.runtime.nativeaccess.NativeStr.isNativeStr(st, pointer)) {
+            return value instanceof TruffleString s && com.oracle.graal.python.runtime.nativeaccess.NativeStr.contentEquals(pointer, s);
+        }
+        if (com.oracle.graal.python.runtime.nativeaccess.NativeLong.isNativeLong(st, pointer)) {
+            return value instanceof Long l && com.oracle.graal.python.runtime.nativeaccess.NativeLong.fromNative(context.getLanguage(), st, pointer, false) instanceof Long v && v.longValue() == l;
+        }
+        if (com.oracle.graal.python.runtime.nativeaccess.NativeSmall.isNativeFloat(st, pointer)) {
+            return value instanceof Double d &&
+                            Double.doubleToRawLongBits(com.oracle.graal.python.runtime.nativeaccess.NativeSmall.floatFromNative(st, pointer, false)) == Double.doubleToRawLongBits(d);
+        }
+        if (com.oracle.graal.python.runtime.nativeaccess.NativeComplex.isNativeComplex(st, pointer)) {
+            return value instanceof com.oracle.graal.python.builtins.objects.complex.PComplex c && c.isExact() &&
+                            Double.doubleToRawLongBits(com.oracle.graal.python.runtime.nativeaccess.NativeComplex.readReal(pointer)) == Double.doubleToRawLongBits(c.getReal()) &&
+                            Double.doubleToRawLongBits(com.oracle.graal.python.runtime.nativeaccess.NativeComplex.readImag(pointer)) == Double.doubleToRawLongBits(c.getImag());
+        }
+        if (value instanceof com.oracle.graal.python.builtins.objects.floats.PNativeFloat f) {
+            // a value-type native float subclass instance: same type, same bits
+            long type = PythonToNativeInternalNode.executeUncached(GetClassNode.executeUncached(f), false);
+            return NativeMemory.readLong(pointer + 8) == type &&
+                            Double.doubleToRawLongBits(com.oracle.graal.python.runtime.nativeaccess.NativeSmall.floatFromNative(st, pointer, false)) == Double.doubleToRawLongBits(f.getValue());
+        }
+        return false;
+    }
+
     @GenerateUncached
     @GenerateInline
     @GenerateCached(false)

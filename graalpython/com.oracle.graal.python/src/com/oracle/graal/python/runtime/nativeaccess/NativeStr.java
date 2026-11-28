@@ -41,6 +41,7 @@
 package com.oracle.graal.python.runtime.nativeaccess;
 
 import static com.oracle.graal.python.runtime.nativeaccess.NativeMemory.UNSAFE;
+import static com.oracle.graal.python.util.PythonUtils.TS_ENCODING;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
@@ -261,6 +262,24 @@ public final class NativeStr {
     }
 
     // ---------------------------------------------------------------- identity ring
+
+    /** Whether struct {@code p} holds the same code points as {@code s} (for assertions). */
+    @TruffleBoundary
+    public static boolean contentEquals(long p, TruffleString s) {
+        int n = s.codePointLengthUncached(TS_ENCODING);
+        if (length(p) != n) {
+            return false;
+        }
+        int k = kind(p);
+        long d = data(p);
+        for (int i = 0; i < n; i++) {
+            int c = k == 1 ? UNSAFE.getByte(d + i) & 0xFF : k == 2 ? UNSAFE.getShort(d + 2L * i) & 0xFFFF : UNSAFE.getInt(d + 4L * i);
+            if (c != s.codePointAtIndexUncached(i, TS_ENCODING)) {
+                return false;
+            }
+        }
+        return true;
+    }
 
     /** Remembers that struct {@code p} holds the value of {@code s}. */
     public static void remember(long p, TruffleString s) {
