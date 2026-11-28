@@ -93,7 +93,21 @@ _Static_assert(offsetof(GraalPyLongAllocState, counters) == 40, "int state layou
 
 #define GRAALPY_LONG_ARENA_SIZE (64 * 1024)
 #define GRAALPY_LONG_ARENA_HEADER 16
-#define GRAALPY_LONG_LINK(B) (*(GraalPyLongBlock **) &(B)->lv_tag)
+/* The free list link is stored in the bytes of a free block's first value field. memcpy keeps
+   this within the aliasing rules; compilers turn it into a plain load or store. */
+static inline GraalPyLongBlock *
+graalpy_long_get_link(GraalPyLongBlock *b)
+{
+    GraalPyLongBlock *next;
+    memcpy(&next, &b->lv_tag, sizeof(next));
+    return next;
+}
+
+static inline void
+graalpy_long_set_link(GraalPyLongBlock *b, GraalPyLongBlock *next)
+{
+    memcpy(&b->lv_tag, &next, sizeof(next));
+}
 
 static GraalPyLongAllocState *graalpy_long_state;
 static destructor graalpy_long_orig_dealloc;
@@ -104,7 +118,7 @@ graalpy_long_block(void)
     GraalPyLongAllocState *st = graalpy_long_state;
     GraalPyLongBlock *b = st->free_list;
     if (b != NULL) {
-        st->free_list = GRAALPY_LONG_LINK(b);
+        st->free_list = graalpy_long_get_link(b);
     } else if (st->bump + sizeof(GraalPyLongBlock) <= st->end) {
         b = (GraalPyLongBlock *) st->bump;
         st->bump += sizeof(GraalPyLongBlock);
@@ -156,7 +170,7 @@ graalpy_long_dealloc(PyObject *op)
     }
     GraalPyLongBlock *b = (GraalPyLongBlock *) op;
     Py_SET_TYPE(op, NULL);
-    GRAALPY_LONG_LINK(b) = graalpy_long_state->free_list;
+    graalpy_long_set_link(b, graalpy_long_state->free_list);
     graalpy_long_state->free_list = b;
 }
 

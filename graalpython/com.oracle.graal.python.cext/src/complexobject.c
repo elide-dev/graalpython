@@ -66,7 +66,21 @@ static GraalPyComplexAllocState *graalpy_complex_state;
 static destructor graalpy_complex_orig_dealloc;
 
 #define GRAALPY_COMPLEX_COUNT(IDX) do { if (graalpy_complex_state->flags & 1) graalpy_complex_state->counters[IDX]++; } while (0)
-#define GRAALPY_COMPLEX_LINK(B) (*(GraalPyComplexBlock **) &(B)->obj.cval.real)
+/* The free list link is stored in the bytes of a free block's first value field. memcpy keeps
+   this within the aliasing rules; compilers turn it into a plain load or store. */
+static inline GraalPyComplexBlock *
+graalpy_complex_get_link(GraalPyComplexBlock *b)
+{
+    GraalPyComplexBlock *next;
+    memcpy(&next, &b->obj.cval.real, sizeof(next));
+    return next;
+}
+
+static inline void
+graalpy_complex_set_link(GraalPyComplexBlock *b, GraalPyComplexBlock *next)
+{
+    memcpy(&b->obj.cval.real, &next, sizeof(next));
+}
 
 static GraalPyComplexBlock *
 graalpy_complex_new_arena(GraalPyComplexAllocState *st)
@@ -90,7 +104,7 @@ graalpy_complex_alloc(double real, double imag)
     GraalPyComplexAllocState *st = graalpy_complex_state;
     GraalPyComplexBlock *b = st->free_list;
     if (b != NULL) {
-        st->free_list = GRAALPY_COMPLEX_LINK(b);
+        st->free_list = graalpy_complex_get_link(b);
     } else if (st->bump + sizeof(GraalPyComplexBlock) <= st->end) {
         b = (GraalPyComplexBlock *) st->bump;
         st->bump += sizeof(GraalPyComplexBlock);
@@ -114,7 +128,7 @@ static void
 graalpy_complex_free_block(GraalPyComplexAllocState *st, GraalPyComplexBlock *b)
 {
     b->serial = 0;
-    GRAALPY_COMPLEX_LINK(b) = st->free_list;
+    graalpy_complex_set_link(b, st->free_list);
     st->free_list = b;
     GRAALPY_COMPLEX_COUNT(GC_FREE);
 }
