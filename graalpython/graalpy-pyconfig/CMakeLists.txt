@@ -120,7 +120,13 @@ function(graalpy_sysconfig_python_string name)
     set(${name}_PYTHON_STRING "${value}" PARENT_SCOPE)
 endfunction()
 
-graalpy_sysconfig_value("OPT" "-DNDEBUG")
+# Optimisation level for C extensions: CPython's sysconfig has "-DNDEBUG -g -O3 -Wall"; without -O,
+# extensions were built at -O0 on GraalPy.
+if(WIN32)
+    graalpy_sysconfig_value("OPT" "-DNDEBUG")
+else()
+    graalpy_sysconfig_value("OPT" "-DNDEBUG -O3")
+endif()
 graalpy_sysconfig_value("ARFLAGS" "rc")
 graalpy_sysconfig_value("USE_GNU_SOURCE" "-D_GNU_SOURCE=1")
 set(GRAALPY_SYSCONFIG_CFLAGS_DEFAULT_VALUE "${GRAALPY_SYSCONFIG_OPT}")

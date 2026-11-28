@@ -513,6 +513,20 @@ def libpythonvm_build_args():
     ):
         build_args += ['-H:-ProtectionKeys']
 
+    if (
+            mx.get_os() == 'darwin'
+            and mx.get_arch() == 'aarch64'
+            and mx_sdk_vm_ng.get_bootstrap_graalvm_version() >= mx.VersionSpec("25.6")
+            and not _is_overridden_native_image_arg("-H:+RandomizeRuntimeCodeCache")
+            and not _is_overridden_native_image_arg("-H:-RandomizeRuntimeCodeCache")
+    ):
+        # macOS ignores address hints for MAP_JIT mappings: with the randomization, every runtime-compiled method
+        # lands at 0x70_0000_0000 + n * size (no entropy), ~440 GB away from libpythonvm and the C extensions.
+        # Apple M1 cores do not predict indirect calls across that distance well once a loop has more than a few
+        # call sites, which slows down code that calls between compiled Python code and C a lot. Without a hint,
+        # MAP_JIT memory is mapped next to the (ASLR-slid) dylibs.
+        build_args += ['-H:-RandomizeRuntimeCodeCache']
+
     profile = None
     require_profile = get_boolean_env("GRAALPY_REQUIRE_PGO_PROFILE")
     if (
