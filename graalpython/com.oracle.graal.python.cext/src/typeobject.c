@@ -2092,7 +2092,9 @@ _PyType_AllocNoTrack(PyTypeObject *type, Py_ssize_t nitems)
         assert(type->tp_itemsize == 0);
         size += _PyInlineValuesSize(type);
     }
-    char *alloc = _PyObject_MallocWithType(type, size + presize);
+    // GraalPy change: zeroed allocation instead of malloc + memset, so that pages of a large
+    // instance that are never written stay non-resident
+    char *alloc = PyObject_Calloc(1, size + presize);
     if (alloc  == NULL) {
         return PyErr_NoMemory();
     }
@@ -2101,10 +2103,8 @@ _PyType_AllocNoTrack(PyTypeObject *type, Py_ssize_t nitems)
         // GraalPy change: different header layout
         // ((PyObject **)alloc)[0] = NULL;
         // ((PyObject **)alloc)[1] = NULL;
-        memset(alloc, '\0', presize);
         _PyObject_GC_Link(obj);
     }
-    memset(obj, '\0', size);
 
     if (type->tp_itemsize == 0) {
         _PyObject_Init(obj, type);

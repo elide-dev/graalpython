@@ -68,6 +68,14 @@ typedef struct {
 #define FROM_MEM_HEAD(g) ((void *)(((mem_head_t *)g)+1))
 
 #define GRAALPY_MEM_HEAD_MAGIC ((size_t)0x47505241574D454DULL)
+/* GraalPy change: zeroed blocks of at least GRAALPY_MEM_MMAP_MIN bytes are mapped directly
+   (fresh zero pages, unmapped on free) instead of calloc: the system allocator keeps freed large blocks in
+   a cache and calloc then zeroes a reused block, which makes all of it resident. */
+#define GRAALPY_MEM_HEAD_MMAP_MAGIC ((size_t)0x475052414D4D4150ULL)
+#if defined(__APPLE__) || defined(__linux__)
+#include <sys/mman.h>
+#define GRAALPY_MEM_MMAP_MIN ((size_t)256 * 1024)
+#endif
 #define GRAALPY_MEM_HEAD_POISON ((size_t)0xDDDDBAD0DDDDBAD0ULL)
 #define GRAALPY_MEM_SAMPLE_RING_SIZE (4096)
 #define GRAALPY_MEM_SAMPLE_HISTORY (8)
@@ -85,9 +93,52 @@ typedef struct {
     size_t allocated_memory;
     size_t max_native_memory;
     size_t native_memory_gc_barrier;
+    /* GraalPy change: requested bytes allowed above the barrier without a collection because
+       the resident footprint did not grow with them (e.g. zeroed allocations whose pages were never
+       touched), and the footprint measured after the last collection (0 = not measured yet). */
+    size_t deferred_memory;
+    size_t footprint_base;
 } GraalPyMem_t;
 
-static GraalPyMem_t _GraalPyMem_State = { 0, 0, 0 };
+static GraalPyMem_t _GraalPyMem_State = { 0, 0, 0, 0, 0 };
+
+/* GraalPy change: resident footprint of the process in bytes, 0 if unknown. */
+#if defined(__APPLE__)
+#include <mach/mach.h>
+static size_t
+_GraalPyMem_Footprint(void)
+{
+    task_vm_info_data_t info;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t) &info, &count) != KERN_SUCCESS) {
+        return 0;
+    }
+    return (size_t) info.phys_footprint;
+}
+#elif defined(__linux__)
+#include <unistd.h>
+static size_t
+_GraalPyMem_Footprint(void)
+{
+    FILE *f = fopen("/proc/self/statm", "r");
+    unsigned long size = 0, resident = 0;
+    if (f == NULL) {
+        return 0;
+    }
+    if (fscanf(f, "%lu %lu", &size, &resident) != 2) {
+        resident = 0;
+    }
+    fclose(f);
+    return (size_t) resident * (size_t) sysconf(_SC_PAGESIZE);
+}
+#else
+static size_t
+_GraalPyMem_Footprint(void)
+{
+    return 0;
+}
+#endif
+
 static GraalPyMemSample_t _GraalPyMem_Samples[GRAALPY_MEM_SAMPLE_RING_SIZE] = {{0}};
 static unsigned long long _GraalPyMem_SampleSerial = 0;
 static size_t _GraalPyMem_SampleIndex = 0;
@@ -190,7 +241,7 @@ static mem_head_t *
 _GraalPyMem_GetValidatedHead(const char *func, void *ptr)
 {
     mem_head_t *ptr_with_head = AS_MEM_HEAD(ptr);
-    if (UNLIKELY(ptr_with_head->dummy != GRAALPY_MEM_HEAD_MAGIC)) {
+    if (UNLIKELY(ptr_with_head->dummy != GRAALPY_MEM_HEAD_MAGIC && ptr_with_head->dummy != GRAALPY_MEM_HEAD_MMAP_MAGIC)) {
         _GraalPyMem_FatalInvalidHeader(func, ptr, ptr_with_head);
     }
     return ptr_with_head;
@@ -505,12 +556,30 @@ static int
 _GraalPyMem_PrepareAlloc(GraalPyMem_t *state, size_t size)
 {
     // memory management
-    while ((state->allocated_memory + size) > state->native_memory_gc_barrier) {
+    while ((state->allocated_memory + size) > state->native_memory_gc_barrier + state->deferred_memory) {
         if (state->max_native_memory == 0) {
             state->allocated_memory = 0;
+            state->deferred_memory = 0;
+            state->footprint_base = 0;
             state->max_native_memory = GraalPyPrivate_GetMaxNativeMemory();
             state->native_memory_gc_barrier = GraalPyPrivate_GetInitialNativeMemory();
             continue;
+        }
+        /* GraalPy change: the barrier counts requested bytes. Garbage that is waiting for the
+           Java GC only costs memory if its pages are resident. If the footprint grew by less than half a
+           barrier since the last collection, allow another barrier's worth of requested bytes (up to the
+           maximum) instead of forcing a full collection. */
+        if (state->native_memory_gc_barrier + state->deferred_memory + state->native_memory_gc_barrier <= state->max_native_memory) {
+            size_t footprint = _GraalPyMem_Footprint();
+            if (footprint != 0) {
+                if (state->footprint_base == 0) {
+                    state->footprint_base = footprint;
+                }
+                if (footprint < state->footprint_base + state->native_memory_gc_barrier / 2) {
+                    state->deferred_memory += state->native_memory_gc_barrier;
+                    continue;
+                }
+            }
         }
         GraalPyPrivate_Log(GRAALPY_LOG_CONFIG,
                 "%s: exceeding native_memory_gc_barrier (%lu) with allocation of size %lu, current allocated_memory: %lu\n",
@@ -520,13 +589,23 @@ _GraalPyMem_PrepareAlloc(GraalPyMem_t *state, size_t size)
         for (int iteration = 0; iteration < MAX_COLLECTION_RETRIES;
                 iteration++) {
             GraalPyPrivate_TriggerGC(delay);
+            /* GraalPy change: cleared references are enqueued by another thread after the
+               collection returns; wait for them in short steps (negative delay: no collection, wait
+               100 us, drain the reference queue) before collecting again. */
+            for (int w = 0; w < 200 && (state->allocated_memory + size) > state->native_memory_gc_barrier; w++) {
+                GraalPyPrivate_TriggerGC((size_t) -1);
+            }
             delay += COLLECTION_DELAY_INCREMENT;
             if ((state->allocated_memory + size)
                     <= state->native_memory_gc_barrier) {
                 state->allocated_memory += size;
+                state->deferred_memory = 0;
+                state->footprint_base = _GraalPyMem_Footprint();
                 return 0;
             }
         }
+        state->deferred_memory = 0;
+        state->footprint_base = 0;
         if (state->native_memory_gc_barrier < state->max_native_memory) {
             state->native_memory_gc_barrier *= 2;
             if (state->native_memory_gc_barrier > state->max_native_memory) {
@@ -590,15 +669,28 @@ _GraalPyMem_RawCalloc(void *ctx, size_t nelem, size_t elsize)
     if (_GraalPyMem_PrepareAlloc(state, nbytes)) {
         return NULL;
     }
-    /* We cannot use 'calloc' because we need to allocate following layout:
-       [ mem_head_t ] [ e_0 ] [ e_1 ]  [ e_2 ] ... [ n_nelem ] */
+    /* Layout: [ mem_head_t ] [ e_0 ] [ e_1 ]  [ e_2 ] ... [ n_nelem ]
+       GraalPy change: 'calloc' of the whole block (header included) instead of malloc +
+       memset, so that fresh pages from the OS are not touched (large blocks stay non-resident until used). */
     size_t total = nbytes + sizeof(mem_head_t);
-    mem_head_t *ptr_with_head = (mem_head_t *)malloc(total);
+#ifdef GRAALPY_MEM_MMAP_MIN
+    if (total >= GRAALPY_MEM_MMAP_MIN) {
+        void *m = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (m == MAP_FAILED) {
+            state->allocated_memory -= nbytes;
+            return NULL;
+        }
+        mem_head_t *mapped = (mem_head_t *) m;
+        mapped->size = nbytes;
+        mapped->dummy = GRAALPY_MEM_HEAD_MMAP_MAGIC;
+        return FROM_MEM_HEAD(mapped);
+    }
+#endif
+    mem_head_t *ptr_with_head = (mem_head_t *)calloc(1, total);
     if (ptr_with_head == NULL) {
         state->allocated_memory -= nbytes;
         return NULL;
     }
-    memset(ptr_with_head, 0, total);
     _GraalPyMem_InitHeader(ptr_with_head, nbytes);
     return FROM_MEM_HEAD(ptr_with_head);
 }
@@ -614,6 +706,15 @@ _GraalPyMem_RawRealloc(void *ctx, void *ptr, size_t size)
     if (size == 0)
         size = 1;
 
+    if (ptr != NULL && AS_MEM_HEAD(ptr)->dummy == GRAALPY_MEM_HEAD_MMAP_MAGIC) { // GraalPy change: mapped block
+        size_t cur = AS_MEM_HEAD(ptr)->size;
+        void *np = _GraalPyMem_RawMalloc(ctx, size);
+        if (np != NULL) {
+            memcpy(np, ptr, cur < size ? cur : size);
+            _GraalPyMem_RawFree(ctx, ptr);
+        }
+        return np;
+    }
     if (ptr != NULL) {
         old = _GraalPyMem_GetValidatedHead(__func__, ptr);
         old_size = old->size;
@@ -664,6 +765,17 @@ _GraalPyMem_RawFree(void *ctx, void *ptr)
         state->allocated_memory = size;
     }
     state->allocated_memory -= size;
+    if (UNLIKELY(state->deferred_memory != 0) && state->allocated_memory < state->native_memory_gc_barrier) {
+        // GraalPy change: back under the barrier, the deferral ends
+        state->deferred_memory = 0;
+        state->footprint_base = 0;
+    }
+#ifdef GRAALPY_MEM_MMAP_MIN
+    if (ptr_with_head->dummy == GRAALPY_MEM_HEAD_MMAP_MAGIC) { // GraalPy change: mapped block
+        munmap(ptr_with_head, size + sizeof(mem_head_t));
+        return;
+    }
+#endif
     _GraalPyMem_PoisonBlock(ptr_with_head, size);
     free(ptr_with_head);
 }
